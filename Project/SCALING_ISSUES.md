@@ -138,17 +138,27 @@ and full L0→L1 cycle with persistence.
 ---
 
 ### [S-07] No rate-limiting or back-pressure on compaction I/O
-**File:** `lsm_engine/lsm_tree.py`
-**Status:** OPEN
+**Files:** `lsm_engine/_utils.py`, `lsm_engine/compaction.py`, `lsm_engine/lsm_tree.py`
+**Status:** FIXED (iteration 4)
 
-**What breaks:** Background compaction uses 100% of available I/O bandwidth with
-no throttling. Under a heavy write load the compaction thread can compete with
-the write path for disk bandwidth, causing write latency spikes.
+**What broke:** Background compaction consumed 100% of available I/O bandwidth.
+Under heavy write loads the compaction thread competed with the write path for
+disk bandwidth, causing write latency spikes.
 
-**Fix (planned):** Add `compaction_rate_bytes_per_sec` option (default unlimited).
-Compaction writer tracks bytes written; if ahead of schedule, sleeps for
-`bytes_written / rate - elapsed` seconds between blocks. This lets the operator
-tune the compaction/write balance for their hardware.
+**Fix:**
+1. `RateLimiter` class in `_utils.py` — token-bucket that sleeps when
+   bytes_written / rate > elapsed. 1 ms sleep granularity; checked every 256
+   entries to avoid per-entry overhead. `reset()` clears debt between jobs.
+2. `compact()` in `compaction.py` accepts optional `rate_limiter` parameter.
+3. `LSMTree(compaction_rate_bytes_per_sec=N)` — 0 = unlimited (default).
+   Example: `50 * 1024 * 1024` reserves bandwidth for the write path.
+
+**Bonus: write amplification metric.** `bytes_written_user` counter tracks
+key+value bytes per put/delete/batch. `snapshot()` computes
+`write_amplification = (bytes_flushed + bytes_compacted) / bytes_written_user`
+when > 0. Typical sustained values: 10–30× under heavy writes.
+
+**Tests:** `tests/test_throttle.py` (9 tests).
 
 ---
 
@@ -178,5 +188,5 @@ on the same level pair.
 | > 10 concurrent scans | File descriptor exhaustion | S-04 | **FIXED** |
 | Background loop | stat() calls per compaction tick | S-03 | **FIXED** |
 | > 100 M keys | Compaction memory / fan-in | S-06 | **FIXED** |
-| Heavy concurrent write | Compaction I/O contention | S-07 | open |
+| Heavy concurrent write | Compaction I/O contention | S-07 | **FIXED** |
 | Multi-core machines | Single compaction thread | S-08 | open |
