@@ -6,6 +6,8 @@ __pycache__/
 *.log
 /tmp/
 .DS_Store
+.pytest_cache/
+_stage/
 
 # C++ build output — never commit compiled files
 build/
