@@ -26,7 +26,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Iterator, List, Optional, Tuple
 
-from .sstable import SSTableReader, SSTableWriter
+from .sstable import SSTableReader, SSTableWriter, _ENTRY_HDR
 
 
 @dataclass(order=True)
@@ -83,9 +83,15 @@ def compact(
     input_paths:     List[str],
     output_path:     str,
     drop_tombstones: bool = False,
+    rate_limiter = None,
 ) -> int:
-    """
-    Merge input_paths (newest first) into output_path.
+    """Merge input_paths (newest first) into output_path.
+
+    rate_limiter: optional RateLimiter instance.  When set, compaction sleeps
+    after every THROTTLE_BATCH_ENTRIES entries if it is writing faster than the
+    configured rate.  This prevents compaction from starving the write path on
+    shared storage.
+
     Returns the number of entries written.
     """
     readers = [SSTableReader(p) for p in input_paths if os.path.exists(p)]
@@ -95,10 +101,20 @@ def compact(
     est_capacity = max(sum(len(r._index) * 100 for r in readers), 100)
     writer  = SSTableWriter(output_path, bloom_capacity=est_capacity)
     written = 0
+    pending_bytes = 0
+    BATCH = 256   # check rate limiter every 256 entries
 
     for key, value, tombstone in kway_merge(readers, drop_tombstones=drop_tombstones):
         writer.add(key, value, tombstone=tombstone)
         written += 1
+        if rate_limiter is not None:
+            pending_bytes += _ENTRY_HDR + len(key) + len(value)
+            if written % BATCH == 0:
+                rate_limiter.consume(pending_bytes)
+                pending_bytes = 0
+
+    if rate_limiter is not None and pending_bytes:
+        rate_limiter.consume(pending_bytes)
 
     if written > 0:
         writer.finish()
