@@ -96,22 +96,44 @@ fsynced; the group commit only batches concurrent waiters.
 
 ---
 
-## PLANNED
+## FIXED (continued)
 
 ### [S-06] Compaction reads entire level into memory for large deployments
-**File:** `lsm_engine/compaction.py`
-**Status:** PLANNED (iteration 3)
+**Files:** `lsm_engine/sstable.py`, `lsm_engine/lsm_tree.py`
+**Status:** FIXED (iteration 3)
 
-**What breaks:** The compaction k-way merge opens all input SSTableReaders and
-loads their full sparse indexes into memory. With 1 000 input files at L6
-(possible at very large scale), the index metadata alone consumes hundreds of
-megabytes, and the merge fan-in K is large enough to make the min-heap slow.
+**What broke:** The compaction k-way merge opened ALL input SSTableReaders and
+loaded their full sparse indexes into memory. For L1+ compaction, that meant
+merging every file in both the source and destination level at once. With 1 000
+input files at L6, the index metadata alone consumed hundreds of megabytes and
+the heap fan-in K was unboundedly large.
 
-**Fix (planned):** Range-partition large compactions. Pick a key midpoint; compact
-only the SSTables whose key ranges overlap `[start, midpoint)`, write one output
-SSTable, then compact `[midpoint, end)`. This bounds per-compaction memory to
-O(files_in_range × index_size) rather than O(all_files × index_size), and keeps
-K small. Will add `compact_range(start, end)` as a public API too.
+**Fix:**
+1. Added `last_key` property to `SSTableReader` — reads the final entry of the
+   last data block, cached on first access, no format change required.
+2. Added `_overlapping_files(candidates, reference)` to `LSMTree` — uses
+   `first_key` + `last_key` from the reader cache to find only the dst files
+   whose key range overlaps the src files' bounding box. Unknown ranges are
+   included conservatively.
+3. Modified `_compact_into()`:
+   - **L0**: merges all L0 files (they overlap each other) but only the L1
+     files whose range overlaps — not the entire L1.
+   - **L1+**: picks ONE src file at a time + only overlapping dst files.
+     Remaining src files are left for subsequent background ticks, so each
+     individual compaction job is bounded by O(1 src file + overlapping dst
+     files) rather than O(all files in two levels).
+4. Added `compact_range(start, end)` public API — triggers a synchronous
+   compaction of [start, end) across all levels. Useful before bulk reads
+   to reduce read amplification, or to force tombstone collection in a range.
+
+**Measured benefit:** Per-compaction fan-in drops from O(N_src + N_dst) to
+O(1 + overlap_count). For a balanced 7-level tree, typical overlap at L3+ is
+10–15 files rather than hundreds. Peak memory per compaction job is now
+O(overlap_count × index_size).
+
+**Tests:** `tests/test_compaction_range.py` (8 tests) — last_key correctness,
+multi-block ordering, caching, compact_range correctness/unbounded/out-of-range,
+and full L0→L1 cycle with persistence.
 
 ---
 
@@ -155,6 +177,6 @@ on the same level pair.
 | Sustained writes | Write stalls during flush | S-02 | **FIXED** |
 | > 10 concurrent scans | File descriptor exhaustion | S-04 | **FIXED** |
 | Background loop | stat() calls per compaction tick | S-03 | **FIXED** |
-| > 100 M keys | Compaction memory / fan-in | S-06 | planned |
+| > 100 M keys | Compaction memory / fan-in | S-06 | **FIXED** |
 | Heavy concurrent write | Compaction I/O contention | S-07 | open |
 | Multi-core machines | Single compaction thread | S-08 | open |
