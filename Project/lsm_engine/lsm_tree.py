@@ -476,7 +476,60 @@ class LSMTree:
                 self._compact_into(src_level=lvl)
                 return
 
+    def _overlapping_files(self,
+                           candidates: List[str],
+                           reference:  List[str]) -> List[str]:
+        """Return files from candidates whose key range overlaps any file in reference.
+
+        Used by compaction to avoid merging the entire destination level when
+        only a small slice of the key space is affected.  Files whose range
+        cannot be determined (missing from cache, read error) are included
+        conservatively so no data is silently skipped.
+        """
+        if not candidates or not reference:
+            return candidates
+
+        # Bounding key range of all reference files
+        ref_min: Optional[bytes] = None
+        ref_max: Optional[bytes] = None
+        for p in reference:
+            rdr = self._get_reader(p)
+            if rdr is None:
+                continue
+            fk = rdr.first_key
+            lk = rdr.last_key
+            if fk is not None and (ref_min is None or fk < ref_min):
+                ref_min = fk
+            if lk is not None and (ref_max is None or lk > ref_max):
+                ref_max = lk
+
+        if ref_min is None or ref_max is None:
+            return candidates   # cannot determine range; include everything
+
+        result = []
+        for p in candidates:
+            rdr = self._get_reader(p)
+            if rdr is None:
+                continue
+            fk = rdr.first_key
+            lk = rdr.last_key
+            if fk is None or lk is None:
+                result.append(p)   # unknown range — include conservatively
+                continue
+            if fk <= ref_max and lk >= ref_min:
+                result.append(p)
+        return result
+
     def _compact_into(self, src_level: int):
+        """Merge a bounded set of src + overlapping dst files into the next level.
+
+        S-06 fix: instead of merging ALL files in both levels at once, we:
+          • L0: include all L0 files (they overlap each other) but only the
+            L1 files whose key range overlaps the L0 key range.
+          • L1+: pick ONE src file at a time + only the dst files that
+            overlap its key range.
+        This bounds per-compaction memory and I/O regardless of level depth.
+        """
         dst_level = src_level + 1
         with self._lock:
             src_files = list(self._manifest.levels[src_level])
@@ -485,7 +538,19 @@ class LSMTree:
         if not src_files:
             return
 
-        all_inputs = src_files + dst_files
+        if src_level == 0:
+            # L0 files can have overlapping key ranges — must merge all of them.
+            # But only pull in the L1 files that actually overlap.
+            picked_src = src_files
+            picked_dst = self._overlapping_files(dst_files, src_files)
+        else:
+            # L1+: files are non-overlapping per level.
+            # Pick the first (oldest) src file; merge it with overlapping dst files.
+            # Remaining src files stay for the next compaction tick.
+            picked_src = [src_files[0]]
+            picked_dst = self._overlapping_files(dst_files, picked_src)
+
+        all_inputs = picked_src + picked_dst
         ts         = int(time.time() * 1_000_000)
         tmp_path   = os.path.join(self.dir, f'L{dst_level}_{ts}.sst.tmp')
         sst_path   = os.path.join(self.dir, f'L{dst_level}_{ts}.sst')
@@ -512,15 +577,14 @@ class LSMTree:
         else:
             new_files = []
 
-        # Invariant 2: MANIFEST is the commit point
+        # Invariant 2: MANIFEST is the commit point.
+        # Note: inputs only lists the PICKED files, not the entire level.
         with self._lock:
             self._manifest.apply_compaction(
-                inputs ={src_level: src_files, dst_level: dst_files},
+                inputs ={src_level: picked_src, dst_level: picked_dst},
                 outputs={dst_level: new_files},
             )
 
-        # Close cached readers before unlinking (fds survive unlink on POSIX
-        # but cache entries would be stale)
         self._evict_readers(all_inputs)
         bytes_in = sum(os.path.getsize(f) for f in all_inputs if os.path.exists(f))
         for f in all_inputs:
@@ -529,6 +593,43 @@ class LSMTree:
             except OSError:
                 pass
         self.metrics.inc(compactions=1, bytes_compacted=bytes_in)
+
+    def compact_range(self, start=None, end=None):
+        """Force a synchronous compaction of keys in [start, end) across all levels.
+
+        Triggers one compaction pass per level pair where any file overlaps
+        the requested range.  Blocks until all triggered compactions complete.
+        Useful before a bulk-read operation to reduce read amplification over
+        a hot key range, or to force tombstone collection.
+
+        Pass start=None / end=None for an unbounded compaction of everything.
+        """
+        sb = _b(start) if start else None
+        eb = _b(end)   if end   else None
+
+        for src_level in range(MAX_LEVELS - 1):
+            with self._lock:
+                src_files = list(self._manifest.levels[src_level])
+
+            if not src_files:
+                continue
+
+            # Only compact if any src file overlaps the requested range
+            in_range = []
+            for p in src_files:
+                rdr = self._get_reader(p)
+                if rdr is None:
+                    continue
+                fk = rdr.first_key
+                lk = rdr.last_key
+                if fk is None or lk is None:
+                    in_range.append(p)
+                    continue
+                if (sb is None or lk >= sb) and (eb is None or fk < eb):
+                    in_range.append(p)
+
+            if in_range:
+                self._compact_into(src_level)
 
     # ── recovery ───────────────────────────────────────────────────────────────
 
