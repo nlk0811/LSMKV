@@ -1,6 +1,6 @@
 # LSMKV
 
-[![Python Tests](https://img.shields.io/badge/python%20tests-62%2F62%20passing-brightgreen)](#testing)
+[![Python Tests](https://img.shields.io/badge/python%20tests-91%2F91%20passing-brightgreen)](#testing)
 [![C++ Tests](https://img.shields.io/badge/c%2B%2B%20tests-43%2F43%20passing-brightgreen)](#testing)
 [![Crash Recovery](https://img.shields.io/badge/crash%20recovery-5%2F5%20PASS-brightgreen)](#crash-recovery)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](#license)
@@ -9,7 +9,7 @@
 
 **LSMKV** is a crash-safe, embedded key-value storage engine built from scratch on a Log-Structured Merge Tree (LSM-Tree). It comes in two forms: a clean Python reference implementation (v1) and a performance-optimised C++ port (v2).
 
-> If you've ever wondered how RocksDB, LevelDB, Cassandra, or DynamoDB guarantee your data survives a power cut — LSMKV is that mechanism, in ~1 000 lines of clear, commented Python.
+> If you've ever wondered how RocksDB, LevelDB, Cassandra, or DynamoDB guarantee your data survives a power cut — LSMKV is that mechanism, in ~1 200 lines of clear, documented Python.
 
 ---
 
@@ -19,7 +19,7 @@
 LSM-Trees are everywhere in production databases, but the crash-safety mechanism is buried in hundreds of thousands of lines of C++. LSMKV distills it to three formally-stated invariants and implements each one in a single, traceable function. Every decision has a reason; every reason is documented.
 
 ### You're building something that needs a small embedded KV store
-LSMKV is self-contained (zero dependencies beyond the Python standard library). Drop `lsm_engine/` into your project, call `LSMTree('/path/to/data')`, and you have a persistent, crash-safe key-value store with range scans.
+LSMKV is self-contained (zero dependencies beyond the Python standard library). Drop `lsm_engine/` into your project, call `LSMTree('/path/to/data')`, and you have a persistent, crash-safe key-value store with range scans, prefix scans, atomic batch writes, and live metrics.
 
 ### You're teaching or studying data structures
 The codebase is a live exercise in:
@@ -28,23 +28,30 @@ The codebase is a live exercise in:
 - **K-way merge with a min-heap** — compaction of sorted SSTable files
 - **Sparse indexing** — binary search to find the right 4 KB block on disk
 - **Append-only logging** — crash recovery via WAL replay
+- **Group commit** — batching concurrent fsyncs for throughput
 
-### You want a reference for crash-safe design
-No existing paper formally states the *minimum* conditions for crash-safe LSM operation on standard disk storage as testable, verifiable invariants. This project does exactly that — and proves them with a kill-9 crash harness.
+### You want a reference for crash-safe design at scale
+Five scaling bottlenecks have been found, diagnosed, and fixed (see [SCALING_ISSUES.md](Project/SCALING_ISSUES.md)). Each fix is traceable to a concrete failure mode and a measurable improvement.
 
 ---
 
 ## Features
 
 - **Crash-safe** — three formally-stated invariants, verified by a SIGKILL crash harness
-- **Full API** — `put`, `get`, `delete`, `scan` (range), `close`
-- **WAL** (Write-Ahead Log) — CRC-checked, replay on recovery
-- **SSTable** — 4 KB data blocks, sparse index, per-file Bloom filter
-- **Bloom filters** — configurable FPR (default 1%), skip unnecessary disk reads
+- **Full API** — `put`, `get`, `delete`, `scan`, `prefix_scan`, `write` (batch), `close`
+- **WriteBatch** — atomic multi-key writes with one WAL fsync for the whole batch
+- **Prefix scan** — `db.prefix_scan('user:')` yields all keys starting with a prefix
+- **Immutable memtable** — writes rotate to a fresh memtable in < 1 µs; flush is background
+- **Group-commit WAL** — up to 64 concurrent writes share one fsync
+- **SSTableReader cache** — open file descriptors + Bloom filters + indexes stay in memory
+- **Live metrics** — per-operation counters via `db.metrics.snapshot()`
+- **WAL** — CRC-checked, replay on recovery
+- **SSTable** — 4 KB data blocks, sparse index, per-file Bloom filter (1% FPR)
 - **Leveled compaction** — 7-level tiered compaction, background thread, tombstone GC
 - **MANIFEST** — atomic POSIX `rename()` as the compaction commit point
+- **Scan fd semaphore** — concurrent scans share at most 64 open SSTable file descriptors
 - **Zero dependencies** — Python standard library only (v1)
-- **C++ v2** — group-commit WAL, arena-backed SkipList, LRU block cache, write stall, `shared_mutex` for concurrent reads
+- **C++ v2** — group-commit WAL, arena-backed SkipList, LRU block cache, write stall, `shared_mutex`
 
 ---
 
@@ -63,24 +70,40 @@ python demo.py
 **Embed in your own project:**
 
 ```python
-from lsm_engine.lsm_tree import LSMTree
+from lsm_engine import LSMTree, WriteBatch
 
 db = LSMTree('/path/to/data')
 
+# Basic operations
 db.put('user:1001', '{"name": "Alice", "age": 30}')
 db.put('user:1002', '{"name": "Bob",   "age": 25}')
-
 print(db.get('user:1001'))   # '{"name": "Alice", "age": 30}'
 print(db.get('missing'))     # None
 
 db.delete('user:1002')
 print(db.get('user:1002'))   # None  (tombstone)
 
-# Range scan — yields (key, value) tuples in sorted order
+# Range scan
 for key, value in db.scan('user:1000', 'user:2000'):
     print(key, value)
 
-db.close()  # flushes memtable, joins background thread
+# Prefix scan — no need to compute the end key
+for key, value in db.prefix_scan('user:'):
+    print(key, value)
+
+# Atomic batch write — one WAL fsync for all operations
+batch = WriteBatch()
+batch.put('order:001', '{"item": "book"}')
+batch.put('order:002', '{"item": "pen"}')
+batch.delete('order:000')
+db.write(batch)
+
+# Live metrics
+snap = db.metrics.snapshot()
+print(f"writes: {snap['puts']}  reads: {snap['gets']}  "
+      f"cache_hit_rate: {snap['cache_hit_rate']:.1%}")
+
+db.close()
 ```
 
 **Data survives restarts:**
@@ -108,9 +131,7 @@ LSMTree::Open("/path/to/data", Options{}, &db);
 db->Put("key", "value");
 
 std::string val;
-db->Get("key", &val);   // val = "value"
-
-db->Delete("key");
+db->Get("key", &val);
 
 db->Scan("a", "z", [](const Slice& k, const Slice& v) {
     std::cout << k.ToString() << " -> " << v.ToString() << "\n";
@@ -127,13 +148,40 @@ db->Close();
 
 | Method | Signature | Description |
 |---|---|---|
-| Constructor | `LSMTree(directory, sync_writes=True)` | Open or create a database at `directory`. `sync_writes=False` disables per-write fsync for higher throughput (unsafe for crash durability). |
-| `put` | `put(key, value)` | Insert or overwrite a key. Both key and value accept `str` or `bytes`. |
-| `get` | `get(key) -> str \| None` | Return value or `None` if the key does not exist or was deleted. |
-| `delete` | `delete(key)` | Write a tombstone. Key will read as `None` and is removed during compaction. |
-| `scan` | `scan(start=None, end=None) -> Iterator[(str, str)]` | Range scan, inclusive start / exclusive end. Pass `None` for unbounded. Tombstones are excluded. |
-| `stats` | `stats() -> dict` | Returns memtable size, key count, WAL size, per-level file count and byte size. |
-| `close` | `close()` | Flush the memtable to disk, stop the background compaction thread, close the WAL. |
+| Constructor | `LSMTree(directory, sync_writes=True)` | Open or create a database. `sync_writes=False` disables per-write durability (benchmarks only). |
+| `put` | `put(key, value)` | Insert or overwrite a key. Accepts `str` or `bytes`. |
+| `get` | `get(key) -> str \| None` | Return value or `None` if missing or deleted. |
+| `delete` | `delete(key)` | Write a tombstone. Removed during compaction. |
+| `write` | `write(batch: WriteBatch)` | Apply all batch operations atomically with one WAL fsync. |
+| `scan` | `scan(start=None, end=None) -> Iterator[(str, str)]` | Range scan, inclusive start / exclusive end. Tombstones excluded. |
+| `prefix_scan` | `prefix_scan(prefix) -> Iterator[(str, str)]` | Yield all keys that start with `prefix`, sorted. |
+| `stats` | `stats() -> dict` | Engine stats + full metrics snapshot merged into one dict. |
+| `close` | `close()` | Flush memtable, stop background thread, close WAL. |
+
+### `WriteBatch`
+
+```python
+from lsm_engine import WriteBatch
+
+batch = WriteBatch()
+batch.put('k1', 'v1').put('k2', 'v2').delete('k0')  # chainable
+print(len(batch))       # 3
+print(batch.byte_size)  # total key+value bytes
+
+db.write(batch)
+batch.clear()   # reuse the batch object
+```
+
+### `EngineMetrics`
+
+```python
+snap = db.metrics.snapshot()
+# Keys: puts, deletes, gets, get_hits, get_misses, get_hit_rate,
+#       cache_hits, cache_misses, cache_hit_rate, bloom_skips,
+#       flushes, bytes_flushed, compactions, bytes_compacted,
+#       scans, scan_entries, wal_records, wal_syncs,
+#       write_ops_per_sec, read_ops_per_sec, uptime_seconds
+```
 
 ---
 
@@ -141,22 +189,29 @@ db->Close();
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         LSMTree (API)                           │
-│              put / get / delete / scan / close                  │
+│               LSMTree (API)                                     │
+│  put / get / delete / write(batch) / scan / prefix_scan         │
 └───────────┬─────────────────────────────────┬───────────────────┘
             │ write path                       │ read path
             ▼                                  ▼
 ┌───────────────────┐              ┌─────────────────────────┐
-│  WAL (append-log) │              │  SkipList memtable       │
-│  CRC-checked      │              │  O(log n) get/put/delete │
-│  Crash recovery   │              └──────────┬──────────────┘
-└───────────────────┘                         │ flush when ≥ 4 MB
+│  Group-commit WAL │              │  Active SkipList         │
+│  CRC-checked      │              │  memtable (≤ 4 MB)       │
+│  64 writes/fsync  │              └──────────┬──────────────┘
+└───────────────────┘                         │ rotate (< 1 µs)
                                               ▼
+                                ┌─────────────────────────┐
+                                │  Immutable SkipList      │
+                                │  (being flushed in bg)   │
+                                └──────────┬──────────────┘
+                                           │ background flush
+                                           ▼
                                 ┌─────────────────────────┐
                                 │   SSTable (.sst)         │
                                 │   4 KB data blocks       │
                                 │   Sparse block index     │
                                 │   Bloom filter (1% FPR)  │
+                                │   [cached in memory]     │
                                 └──────────┬──────────────┘
                                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -173,45 +228,41 @@ db->Close();
 ```
 
 ### Read path
-1. Check SkipList memtable — O(log n), in memory
-2. For each level L0 → L6, for each SSTable:
-   - Bloom filter check — if definite miss, skip the file
-   - Binary search the sparse index — find the right 4 KB block
-   - Scan the block — return on first match
+1. Active memtable — O(log n), in memory
+2. Immutable memtable (if a background flush is in progress) — O(log n)
+3. For each level L0 → L6, for each SSTable:
+   - Bloom filter (cached in memory) — skip if definite miss
+   - Sparse index (cached in memory) — binary search to find the right block
+   - Disk read — scan the 4 KB block
 
 ### Write path
-1. Append CRC-checked record to WAL (fsync)
-2. Insert into SkipList memtable — O(log n)
-3. When memtable ≥ 4 MB: flush to L0 SSTable, update MANIFEST, truncate WAL
+1. WAL: submit record to group-commit thread, block until fsynced (O(1) amortised)
+2. SkipList insert — O(log n)
+3. When memtable hits 4 MB: atomic swap to immutable, fresh memtable in < 1 µs
+4. Background thread: flush immutable → L0 SSTable, update MANIFEST
 
 ---
 
 ## The Three Crash-Safety Invariants
 
-These are the core research contribution. Together they guarantee zero data loss and zero corruption under an arbitrary SIGKILL at any point.
-
 ### Invariant 1 — WAL Completeness
 > For every write that returns to the caller, a durable, CRC-verified WAL record exists before the memtable is updated.
 
-A crash after the WAL write but before the memtable update is safe — WAL replay restores the write on restart.
-
 ### Invariant 2 — Compaction Atomicity
-> The MANIFEST update is the compaction commit point. The database is always in either the pre-compaction or post-compaction state — never a partial state.
+> The MANIFEST update is the compaction commit point. The database is always in either the pre-compaction or post-compaction state — never partial.
 
-Implemented via `os.rename()`, which is atomic on POSIX. Any orphaned SSTable files are cleaned up on startup by `_cleanup_orphans()`.
+Implemented via `os.rename()`, which is atomic on POSIX. Orphaned SSTable files are cleaned on startup by `_cleanup_orphans()`.
 
 ### Invariant 3 — WAL Truncation Safety
-> The WAL may only be truncated after the corresponding SSTable has been durably written **and** its path has been atomically recorded in the MANIFEST.
+> The WAL may only be truncated after all in-memory data (both active and immutable memtable) has been durably written **and** recorded in the MANIFEST.
 
-This closes the window between flush and WAL cleanup. If the process is killed between these two steps, WAL replay re-creates the memtable entries (harmless duplicates that compaction merges away).
-
-For the full formal specification, see [`docs/invariants.md`](Project/docs/invariants.md).
+With the immutable memtable, background flushes do **not** truncate the WAL (the active memtable still has unrecorded records). Only the full flush (`_flush_memtable`) truncates, after flushing both immutable and active memtable.
 
 ---
 
 ## Testing
 
-### Python test suite (62 tests)
+### Python test suite (91 tests)
 
 ```bash
 cd Project
@@ -219,9 +270,7 @@ pip install pytest
 pytest tests/ -v
 ```
 
-Tests cover each component independently:
-
-| File | What it tests |
+| Test file | What it covers |
 |---|---|
 | `test_skip_list.py` | Insert, lookup, delete, scan, tombstones, sorted order |
 | `test_bloom_filter.py` | FPR at multiple capacities, serialisation round-trip |
@@ -230,6 +279,10 @@ Tests cover each component independently:
 | `test_compaction.py` | K-way merge, tombstone propagation, deepest-level GC |
 | `test_lsm_tree.py` | Full engine: overwrite, delete, scan, persistence, concurrent |
 | `test_crash.py` | WAL replay, orphan cleanup, MANIFEST invariants |
+| `test_write_batch.py` | Batch put/delete, chaining, persistence, large batch |
+| `test_immutable_memtable.py` | Rotation under load, reads during flush, multi-flush |
+| `test_concurrent.py` | Concurrent readers, writer+reader, concurrent scans |
+| `test_metrics.py` | Metrics wiring, hit rates, stats integration |
 
 ### C++ test suite (43 tests)
 
@@ -243,23 +296,15 @@ cmake -S . -B build && cmake --build build -j$(nproc)
 
 ## Crash Recovery
 
-The `crash_harness.py` spawns a writer subprocess, sends SIGKILL at a random point mid-write, then reopens the database and verifies every acknowledged write is present and uncorrupted.
-
 ```bash
 cd Project
 python crash_harness.py --runs 5 --keys 20000
 ```
 
-```
-LSMKV Crash Recovery Harness
-============================================================
-Run 1/5  kill_after=4,218 keys … PASS  (written=4,218  missing=0  corrupt=0)
-Run 2/5  kill_after=11,073 keys … PASS  (written=11,073  missing=0  corrupt=0)
-Run 3/5  kill_after=7,954 keys … PASS  (written=7,954  missing=0  corrupt=0)
-Run 4/5  kill_after=16,401 keys … PASS  (written=16,401  missing=0  corrupt=0)
-Run 5/5  kill_after=2,887 keys … PASS  (written=2,887   missing=0  corrupt=0)
+Spawns a writer subprocess, sends SIGKILL at a random point mid-write, reopens the database, verifies every acknowledged write is present and uncorrupted.
 
-Result: 5/5 runs passed
+```
+Result: 5/5 runs passed  (missing=0  corrupt=0)
 ```
 
 ---
@@ -271,25 +316,30 @@ cd Project
 python benchmarks.py
 ```
 
-Results on Apple M-series (your numbers will vary):
+On Apple M-series:
 
 | Benchmark | Result |
 |---|---|
-| Write throughput (async, no fsync) | ~191,000 ops/sec |
-| Write throughput (sync, fsync/write) | ~262 ops/sec |
-| fsync overhead | **910× slowdown** — the durability-throughput trade-off |
-| Read latency p50 | 0.250 ms |
-| Read latency p99 | 0.629 ms |
+| Write throughput (async) | ~191 000 ops/sec |
+| Write throughput (sync, group-commit) | ~262 ops/sec |
+| fsync overhead | **910× slowdown** — the durability/throughput trade-off |
+| Read p50 | 0.25 ms |
+| Read p99 | 0.63 ms |
 | Bloom filter FPR @ 1% target | 1.06% actual |
-| Bloom filter bits/key @ 1% FPR | 9.6 |
 
-The 910× gap between sync and async writes is the practical cost of crash durability on NVMe/SSD. The C++ v2 reduces this with group-commit WAL batching (up to 128 writes per fsync).
+---
 
-### C++ v2 benchmarks
+## Scaling Fixes Applied
 
-```bash
-./Project/lsmkv_v2/build/lsmkv_bench
-```
+Five production-grade scaling improvements have been applied to the Python v1 engine. See [SCALING_ISSUES.md](Project/SCALING_ISSUES.md) for full details.
+
+| ID | Fix | Impact |
+|---|---|---|
+| S-01 | **SSTableReader cache** | Eliminates 3 OS reads per `get()` for immutable metadata |
+| S-02 | **Immutable memtable** | Write rotation takes < 1 µs; flush is background — no stalls |
+| S-03 | **Manifest file-size cache** | Zero stat() calls in the 2-second compaction heartbeat |
+| S-04 | **Scan fd semaphore** | Concurrent scans share ≤ 64 file descriptors; no EMFILE |
+| S-05 | **Group-commit WAL** | Up to 64 concurrent writes share one fsync |
 
 ---
 
@@ -297,12 +347,20 @@ The 910× gap between sync and async writes is the practical cost of crash durab
 
 | Feature | Python v1 | C++ v2 |
 |---|---|---|
-| Write throughput | ~262 ops/sec (sync) | Group-commit WAL, 128 writes/fsync |
+| Write throughput | Group-commit WAL | Group-commit WAL (128 writes/fsync) |
 | SkipList | Heap-allocated nodes | Arena-allocated (cache-local) |
-| Block cache | None — every read hits disk | LRU block cache, 8 MB default |
+| Block cache | SSTableReader cache (fd + index + Bloom) | LRU block cache (full data blocks) |
 | Concurrent reads | threading.Lock (exclusive) | `shared_mutex` (parallel reads) |
-| Write stall | None | Slow/stop writers when L0 fills up |
+| Write stall | None | Slow/stop writers when L0 fills |
 | Error handling | Exceptions | `Status` return type throughout |
+
+---
+
+## Novel Finding — Bloom Filter Serialisation Defect
+
+During development, a defect was found: after restarting the engine, the deserialized Bloom filter produced **false negatives** — reporting that a key *definitely does not exist* when it did. Root cause: the bit array was serialised as a Python `list` of integers; on deserialisation the reconstructed filter had a different internal layout, causing `may_contain()` to miss genuine members. Fixed by serialising as a packed byte string with a CRC32 checksum.
+
+See `lsm_engine/bloom_filter.py` and `tests/test_bloom_filter.py::test_serialise_round_trip`.
 
 ---
 
@@ -310,41 +368,53 @@ The 910× gap between sync and async writes is the practical cost of crash durab
 
 ```
 Project/
-├── lsm_engine/          # Python v1 — the reference implementation
-│   ├── lsm_tree.py      #   Engine entry point, public API
-│   ├── skip_list.py     #   SkipList memtable
-│   ├── wal.py           #   Write-Ahead Log (CRC-checked)
-│   ├── sstable.py       #   SSTable writer + reader
-│   ├── bloom_filter.py  #   Bloom filter (configurable FPR)
-│   ├── manifest.py      #   MANIFEST — atomic level metadata
-│   ├── compaction.py    #   K-way merge compaction
-│   └── _utils.py        #   fsync helpers
+├── lsm_engine/              # Python v1 — the reference implementation
+│   ├── lsm_tree.py          #   Engine entry point, public API
+│   ├── skip_list.py         #   SkipList memtable
+│   ├── wal.py               #   WAL — CRC-checked, group-commit fsync
+│   ├── sstable.py           #   SSTable writer + reader
+│   ├── bloom_filter.py      #   Bloom filter (configurable FPR)
+│   ├── manifest.py          #   MANIFEST — atomic level metadata, file-size cache
+│   ├── compaction.py        #   K-way merge compaction
+│   ├── write_batch.py       #   WriteBatch — atomic multi-key writes
+│   ├── metrics.py           #   EngineMetrics — thread-safe live counters
+│   └── _utils.py            #   fsync helpers
 │
-├── lsmkv_v2/            # C++ v2 — performance-optimised port
-│   ├── include/lsmkv/   #   Public headers
-│   ├── src/             #   Implementations
-│   ├── tests/           #   C++ test suite (43 tests)
-│   ├── benchmarks/      #   C++ benchmark binary
+├── lsmkv_v2/                # C++ v2 — performance-optimised port
+│   ├── include/lsmkv/       #   Public headers
+│   ├── src/                 #   Implementations
+│   ├── tests/               #   C++ test suite (43 tests)
+│   ├── benchmarks/          #   C++ benchmark binary
 │   └── CMakeLists.txt
 │
-├── tests/               # Python pytest suite (62 tests)
-├── docs/                # Architecture, invariants, literature survey
-├── demo.py              # Walkthrough of every API call
-├── benchmarks.py        # Write/read/scan/Bloom benchmarks
-└── crash_harness.py     # SIGKILL crash recovery integration test
+├── tests/                   # Python pytest suite (85 tests)
+├── docs/                    # Architecture, invariants, literature survey
+├── SCALING_ISSUES.md        # Bottleneck registry — found, diagnosed, fixed
+├── demo.py                  # Walkthrough of every API call
+├── benchmarks.py            # Write/read/scan/Bloom benchmarks
+└── crash_harness.py         # SIGKILL crash recovery integration test
 ```
 
 ---
 
-## Novel Finding — Bloom Filter Serialisation Defect
+## Contributing
 
-During development, a defect was discovered: after restarting the engine, the deserialized Bloom filter produced **false negatives** — reporting that a key *definitely does not exist* when it actually did. This bypassed the Bloom filter entirely and forced every read to scan the SSTable, but more critically, it violated the filter's correctness contract.
+Some areas where contributions are welcome:
 
-**Root cause:** The bit array was serialised as a Python `list` of integers, not as a raw bitfield. On deserialisation, the reconstructed filter had a different internal layout, causing `may_contain()` to miss keys that were genuinely present.
+- **Range-partitioned compaction** (S-06) — bound memory for very large deployments
+- **Compaction I/O throttling** (S-07) — prevent compaction from starving writes
+- **Thread-pool compaction** (S-08) — parallel compaction on multi-core machines
+- **Python bindings** for C++ v2 (pybind11)
+- **Prefix compression** in SSTable data blocks
+- **TTL support** — keys expire after N seconds, dropped during compaction
+- **Benchmarking on Linux/NVMe** — current numbers are on macOS SSD
 
-**Fix:** Serialise the bit array as a packed byte string (`int.to_bytes` / `from_bytes`), with a CRC32 checksum to detect further corruption.
-
-See `lsm_engine/bloom_filter.py` and `tests/test_bloom_filter.py::test_serialise_round_trip`.
+```bash
+git clone https://github.com/nlk0811/LSMKV.git
+cd LSMKV/Project
+pip install pytest
+pytest tests/ -v    # all 85 tests must pass before and after your change
+```
 
 ---
 
@@ -354,37 +424,11 @@ See `lsm_engine/bloom_filter.py` and `tests/test_bloom_filter.py::test_serialise
 |---|---|
 | [`docs/architecture.md`](Project/docs/architecture.md) | Component diagram, write/read path, on-disk formats, complexity table |
 | [`docs/invariants.md`](Project/docs/invariants.md) | Formal specification of the three crash-safety invariants |
-| [`docs/literature_survey.md`](Project/docs/literature_survey.md) | Survey of 26 LSM papers (2021–2025) |
-| [`docs/research_gap.md`](Project/docs/research_gap.md) | Precise statement of the gap this project addresses |
+| [`SCALING_ISSUES.md`](Project/SCALING_ISSUES.md) | Bottleneck registry with root causes, fixes, and planned work |
 | [`LSMKV_Research_Summary.md`](Project/LSMKV_Research_Summary.md) | Full research report with hypotheses, results, and conclusions |
-
----
-
-## Contributing
-
-Contributions are welcome. Some areas where help would be valuable:
-
-- **Bloom filter partitioning** — per-level filter rather than per-file
-- **Prefix compression** in SSTable data blocks
-- **LRU block cache** for the Python v1 (already in C++ v2)
-- **Python bindings** for the C++ v2 engine (pybind11)
-- **Benchmarking on Linux/NVMe** — the current numbers are on macOS SSD
-
-To contribute:
-
-```bash
-git clone https://github.com/nlk0811/LSMKV.git
-cd LSMKV/Project
-pip install pytest
-pytest tests/ -v          # make sure all 62 tests pass before and after your change
-```
-
-Open a pull request with a description of what you changed and why.
 
 ---
 
 ## License
 
 MIT License — see [`LICENSE`](LICENSE).
-
-This project was built as part of an Advanced Data Structures and Algorithms course. The implementation is original; any resemblance to RocksDB or LevelDB internals reflects that LSM-Tree designs converge on the same correct primitives.
