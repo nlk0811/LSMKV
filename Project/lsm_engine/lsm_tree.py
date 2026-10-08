@@ -44,7 +44,7 @@ from .skip_list    import SkipList
 from .sstable      import SSTableReader, SSTableWriter
 from .wal          import WAL, OpType
 from .write_batch  import WriteBatch
-from ._utils       import fsync_fd, fsync_dir
+from ._utils       import fsync_fd, fsync_dir, RateLimiter
 
 MEMTABLE_LIMIT      = 4 * 1024 * 1024   # 4 MB before flush
 L0_COMPACT_TRIGGER  = 4                  # flush L0 → L1 when this many L0 files exist
@@ -87,7 +87,8 @@ def _prefix_end(prefix: bytes) -> Optional[bytes]:
 # ── Engine ────────────────────────────────────────────────────────────────────
 
 class LSMTree:
-    def __init__(self, directory: str, sync_writes: bool = True):
+    def __init__(self, directory: str, sync_writes: bool = True,
+                 compaction_rate_bytes_per_sec: float = 0):
         """
         sync_writes=True  (default) — group-commit WAL fsync.
             Each put/delete blocks until its WAL record is durable.
@@ -95,6 +96,9 @@ class LSMTree:
         sync_writes=False — no fsync; OS decides when to flush.
             Higher throughput but acknowledged writes may be lost on power failure.
             Used for benchmarking to isolate storage-engine overhead from I/O cost.
+        compaction_rate_bytes_per_sec — throttle background compaction I/O.
+            0 (default) = unlimited.  Set to e.g. 50 * 1024 * 1024 (50 MB/s) to
+            prevent compaction from saturating the disk and starving writes.
         """
         self.dir = directory
         os.makedirs(directory, exist_ok=True)
@@ -121,6 +125,9 @@ class LSMTree:
         # Scan fd semaphore: prevents a single scan from exhausting the OS fd limit.
         self._scan_sem = threading.Semaphore(MAX_SCAN_FDS)
 
+        # Compaction I/O rate limiter (unlimited when rate == 0).
+        self._compaction_limiter = RateLimiter(compaction_rate_bytes_per_sec)
+
         # Live metrics, accessible via db.metrics or included in db.stats().
         self.metrics = EngineMetrics()
 
@@ -138,7 +145,8 @@ class LSMTree:
         with self._write_lock:
             self._wal.log_put(kb, vb)
             self._memtable.put(kb, vb)
-            self.metrics.inc(puts=1, wal_records=1)
+            self.metrics.inc(puts=1, wal_records=1,
+                             bytes_written_user=len(kb) + len(vb))
             if self._memtable.size_bytes >= MEMTABLE_LIMIT:
                 self._maybe_rotate()
 
@@ -147,7 +155,8 @@ class LSMTree:
         with self._write_lock:
             self._wal.log_delete(kb)
             self._memtable.delete(kb)
-            self.metrics.inc(deletes=1, wal_records=1)
+            self.metrics.inc(deletes=1, wal_records=1,
+                             bytes_written_user=len(kb))
             if self._memtable.size_bytes >= MEMTABLE_LIMIT:
                 self._maybe_rotate()
 
@@ -156,15 +165,16 @@ class LSMTree:
         if len(batch) == 0:
             return
         ops = list(batch)
+        user_bytes = sum(len(k) + len(v) for _, k, v in ops)
         with self._write_lock:
-            # One fsync covers all ops in the batch
             self._wal.log_batch([(op, key, value) for op, key, value in ops])
             for op, key, value in ops:
                 if int(op) == 1:   # PUT
                     self._memtable.put(key, value)
                 else:              # DELETE
                     self._memtable.delete(key)
-            self.metrics.inc(batches=1, batch_ops=len(ops), wal_records=len(ops))
+            self.metrics.inc(batches=1, batch_ops=len(ops), wal_records=len(ops),
+                             bytes_written_user=user_bytes)
             if self._memtable.size_bytes >= MEMTABLE_LIMIT:
                 self._maybe_rotate()
 
@@ -556,8 +566,10 @@ class LSMTree:
         sst_path   = os.path.join(self.dir, f'L{dst_level}_{ts}.sst')
         deepest    = (dst_level == MAX_LEVELS - 1)
 
+        self._compaction_limiter.reset()   # fresh token bucket per job
         try:
-            written = compact(all_inputs, tmp_path, drop_tombstones=deepest)
+            written = compact(all_inputs, tmp_path, drop_tombstones=deepest,
+                              rate_limiter=self._compaction_limiter)
         except Exception:
             try:
                 os.remove(tmp_path)
