@@ -40,19 +40,27 @@ class BloomFilter:
         return all(self.bits[pos >> 3] & (1 << (pos & 7)) for pos in self._hashes(key))
 
     # ── serialization ──────────────────────────────────────────────────────────
+    # Header: capacity(4I) hash_count(4I) fpr(4f) bit_count(8Q) = 20 bytes
+    # bit_count must be stored explicitly — it may not be a multiple of 8,
+    # so deriving it from len(bits)*8 on deserialise would shift every hash
+    # to a different bucket and produce false negatives.
+    _HDR_FMT  = '>IIfQ'
+    _HDR_SIZE = struct.calcsize('>IIfQ')   # 20 bytes
 
     def serialize(self) -> bytes:
-        # header: capacity(4) hash_count(4) fpr(4f)
-        header = struct.pack('>IIf', self.capacity, self.hash_count, self.fpr)
+        header = struct.pack(self._HDR_FMT,
+                             self.capacity, self.hash_count,
+                             self.fpr, self.bit_count)
         return header + bytes(self.bits)
 
     @classmethod
     def deserialize(cls, data: bytes) -> 'BloomFilter':
-        capacity, hash_count, fpr = struct.unpack('>IIf', data[:12])
+        hdr_size = struct.calcsize('>IIfQ')
+        capacity, hash_count, fpr, bit_count = struct.unpack('>IIfQ', data[:hdr_size])
         bf = cls.__new__(cls)
-        bf.capacity = capacity
-        bf.fpr = fpr
+        bf.capacity   = capacity
+        bf.fpr        = fpr
         bf.hash_count = hash_count
-        bf.bits = bytearray(data[12:])
-        bf.bit_count = len(bf.bits) * 8
+        bf.bit_count  = bit_count
+        bf.bits       = bytearray(data[hdr_size:])
         return bf
