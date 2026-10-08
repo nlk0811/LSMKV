@@ -29,6 +29,7 @@ Scaling fixes applied (see SCALING_ISSUES.md):
   S-05 Group-commit WAL     – up to group_commit_max records share one fsync.
 """
 
+import concurrent.futures
 import heapq
 import os
 import threading
@@ -47,7 +48,9 @@ from .write_batch  import WriteBatch
 from ._utils       import fsync_fd, fsync_dir, RateLimiter
 
 MEMTABLE_LIMIT      = 4 * 1024 * 1024   # 4 MB before flush
-L0_COMPACT_TRIGGER  = 4                  # flush L0 → L1 when this many L0 files exist
+L0_COMPACT_TRIGGER  = 4                  # trigger L0→L1 compaction
+L0_SLOWDOWN_TRIGGER = 8                  # start slowing writes (1 ms per extra file)
+L0_STOP_TRIGGER     = 12                 # stall writes completely until L0 drains
 BASE_LEVEL_BYTES    = 10 * 1024 * 1024  # 10 MB budget for L1
 LEVEL_MULTIPLIER    = 10                 # each level is 10× larger than the previous
 MAX_SCAN_FDS        = 64                 # max SSTable fds open at once during a scan
@@ -88,17 +91,15 @@ def _prefix_end(prefix: bytes) -> Optional[bytes]:
 
 class LSMTree:
     def __init__(self, directory: str, sync_writes: bool = True,
-                 compaction_rate_bytes_per_sec: float = 0):
+                 compaction_rate_bytes_per_sec: float = 0,
+                 compaction_threads: int = 2):
         """
         sync_writes=True  (default) — group-commit WAL fsync.
-            Each put/delete blocks until its WAL record is durable.
-            Multiple concurrent writers share one fsync (group commit).
-        sync_writes=False — no fsync; OS decides when to flush.
-            Higher throughput but acknowledged writes may be lost on power failure.
-            Used for benchmarking to isolate storage-engine overhead from I/O cost.
-        compaction_rate_bytes_per_sec — throttle background compaction I/O.
-            0 (default) = unlimited.  Set to e.g. 50 * 1024 * 1024 (50 MB/s) to
-            prevent compaction from saturating the disk and starving writes.
+        sync_writes=False — no fsync; OS decides when to flush (benchmarks only).
+        compaction_rate_bytes_per_sec — throttle compaction I/O (0 = unlimited).
+        compaction_threads — parallel compaction workers (default 2).
+            L0→L1 and L2→L3 can run simultaneously; adjacent level pairs serialise
+            via per-level locks so no two jobs ever touch the same level.
         """
         self.dir = directory
         os.makedirs(directory, exist_ok=True)
@@ -128,6 +129,17 @@ class LSMTree:
         # Compaction I/O rate limiter (unlimited when rate == 0).
         self._compaction_limiter = RateLimiter(compaction_rate_bytes_per_sec)
 
+        # Parallel compaction: thread pool + per-level locks.
+        # Two jobs may run concurrently only if they don't share a level.
+        # Locks are acquired in ascending level-number order to prevent deadlock.
+        self._compaction_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max(1, compaction_threads),
+            thread_name_prefix='lsmkv-compact',
+        )
+        self._compaction_locks = {lvl: threading.Lock() for lvl in range(MAX_LEVELS)}
+        self._compaction_futures: Dict[int, concurrent.futures.Future] = {}
+        self._compaction_fut_lock = threading.Lock()
+
         # Live metrics, accessible via db.metrics or included in db.stats().
         self.metrics = EngineMetrics()
 
@@ -140,7 +152,27 @@ class LSMTree:
 
     # ── public API ─────────────────────────────────────────────────────────────
 
+    def _maybe_stall_writes(self):
+        """Apply back-pressure if L0 is accumulating faster than compaction drains it.
+
+        L0 slowdown (>= L0_SLOWDOWN_TRIGGER files): sleep 1 ms per extra file.
+        L0 stop      (>= L0_STOP_TRIGGER files):    block until L0 drains below stop.
+        This prevents unbounded L0 growth under write bursts that outpace compaction.
+        """
+        with self._lock:
+            n = len(self._manifest.levels[0])
+        if n >= L0_STOP_TRIGGER:
+            while True:
+                time.sleep(0.005)
+                with self._lock:
+                    n = len(self._manifest.levels[0])
+                if n < L0_STOP_TRIGGER:
+                    break
+        elif n >= L0_SLOWDOWN_TRIGGER:
+            time.sleep((n - L0_SLOWDOWN_TRIGGER + 1) * 0.001)
+
     def put(self, key, value):
+        self._maybe_stall_writes()
         kb = _b(key); vb = _b(value)
         with self._write_lock:
             self._wal.log_put(kb, vb)
@@ -151,6 +183,7 @@ class LSMTree:
                 self._maybe_rotate()
 
     def delete(self, key):
+        self._maybe_stall_writes()
         kb = _b(key)
         with self._write_lock:
             self._wal.log_delete(kb)
@@ -164,6 +197,7 @@ class LSMTree:
         """Apply a WriteBatch atomically: one lock, one WAL fsync, all memtable inserts."""
         if len(batch) == 0:
             return
+        self._maybe_stall_writes()
         ops = list(batch)
         user_bytes = sum(len(k) + len(v) for _, k, v in ops)
         with self._write_lock:
@@ -307,10 +341,10 @@ class LSMTree:
 
     def close(self):
         self._shutdown.set()
-        self._imm_pending.set()   # wake bg thread so it exits promptly
+        self._imm_pending.set()           # wake bg thread so it exits promptly
         self._bg.join(timeout=5)
+        self._compaction_executor.shutdown(wait=True)   # drain in-flight jobs
         with self._write_lock:
-            # Flush any remaining immutable + active memtable
             if self._imm is not None:
                 self._flush_imm()
             if len(self._memtable) > 0:
@@ -460,31 +494,43 @@ class LSMTree:
 
     def _bg_loop(self):
         while not self._shutdown.is_set():
-            # Wait for either an imm-flush event or the 2-second heartbeat
             self._imm_pending.wait(timeout=2)
             self._imm_pending.clear()
             try:
                 if self._imm is not None:
                     self._flush_imm()
-                self._check_compaction()
+                self._schedule_compactions()
             except Exception:
                 pass
 
-    def _check_compaction(self):
-        with self._lock:
-            l0 = list(self._manifest.levels[0])
+    def _schedule_compactions(self):
+        """Submit compaction jobs for all levels that are over budget.
 
-        if len(l0) >= L0_COMPACT_TRIGGER:
-            self._compact_into(src_level=0)
-            return
+        S-08: multiple non-adjacent level pairs compact in parallel (e.g.
+        L0→L1 and L2→L3 simultaneously).  Adjacent pairs serialise via
+        per-level locks acquired inside _compact_into.
+        """
+        with self._lock:
+            l0_count = len(self._manifest.levels[0])
+
+        if l0_count >= L0_COMPACT_TRIGGER:
+            self._submit_compaction(0)
 
         for lvl in range(1, MAX_LEVELS - 1):
             budget = BASE_LEVEL_BYTES * (LEVEL_MULTIPLIER ** lvl)
             with self._lock:
                 size = self._manifest.level_size(lvl)
             if size > budget:
-                self._compact_into(src_level=lvl)
-                return
+                self._submit_compaction(lvl)
+
+    def _submit_compaction(self, src_level: int):
+        """Submit a compaction job for src_level if one isn't already running."""
+        with self._compaction_fut_lock:
+            existing = self._compaction_futures.get(src_level)
+            if existing is not None and not existing.done():
+                return   # already in progress
+            future = self._compaction_executor.submit(self._compact_into, src_level)
+            self._compaction_futures[src_level] = future
 
     def _overlapping_files(self,
                            candidates: List[str],
@@ -533,14 +579,30 @@ class LSMTree:
     def _compact_into(self, src_level: int):
         """Merge a bounded set of src + overlapping dst files into the next level.
 
-        S-06 fix: instead of merging ALL files in both levels at once, we:
-          • L0: include all L0 files (they overlap each other) but only the
-            L1 files whose key range overlaps the L0 key range.
-          • L1+: pick ONE src file at a time + only the dst files that
-            overlap its key range.
-        This bounds per-compaction memory and I/O regardless of level depth.
+        S-06: picks only overlapping dst files (bounded fan-in).
+        S-08: acquires per-level locks in ascending order so concurrent jobs at
+              non-adjacent levels run in parallel while adjacent pairs serialise.
+              Uses non-blocking acquire — if a level is busy, we return immediately
+              and the background loop retries on the next tick.
         """
         dst_level = src_level + 1
+        lock_src = self._compaction_locks[src_level]
+        lock_dst = self._compaction_locks[dst_level]
+
+        if not lock_src.acquire(blocking=False):
+            return   # another job is already compacting this src level
+        try:
+            if not lock_dst.acquire(blocking=False):
+                return   # adjacent level is busy; retry next tick
+            try:
+                self._do_compact(src_level, dst_level)
+            finally:
+                lock_dst.release()
+        finally:
+            lock_src.release()
+
+    def _do_compact(self, src_level: int, dst_level: int):
+        """Inner compaction logic, called while both level locks are held."""
         with self._lock:
             src_files = list(self._manifest.levels[src_level])
             dst_files = list(self._manifest.levels[dst_level])
