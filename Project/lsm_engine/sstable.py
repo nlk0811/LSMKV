@@ -220,5 +220,32 @@ class SSTableReader:
     def first_key(self) -> Optional[bytes]:
         return self._index[0][0] if self._index else None
 
+    @property
+    def last_key(self) -> Optional[bytes]:
+        """Last key in this SSTable, derived from the final data block.
+        Result is cached on first call so repeated lookups are free.
+        Used by compaction to determine which files overlap a given key range.
+        """
+        if not self._index:
+            return None
+        cached = getattr(self, '_last_key_cache', None)
+        if cached is not None:
+            return cached
+        _, off, sz = self._index[-1]
+        try:
+            self._f.seek(off)
+            data, pos, last = self._f.read(sz), 0, None
+            while pos < len(data):
+                if pos + _ENTRY_HDR > len(data):
+                    break
+                klen, vlen, _ = struct.unpack(_ENTRY_FMT, data[pos:pos+_ENTRY_HDR])
+                pos += _ENTRY_HDR
+                last  = data[pos:pos+klen]
+                pos  += klen + vlen
+            self._last_key_cache = last
+            return last
+        except Exception:
+            return None
+
     def close(self):
         self._f.close()
