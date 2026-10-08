@@ -71,6 +71,12 @@ class LSMTree:
         self._wal        = WAL(os.path.join(directory, 'wal.log'),
                                sync_writes=sync_writes)
 
+        # SSTableReader cache: keeps file descriptors + index + Bloom filter
+        # in memory across calls instead of reopening on every get().
+        # Evicted when files are removed by compaction or on close().
+        self._reader_cache: Dict[str, SSTableReader] = {}
+        self._cache_lock   = threading.Lock()
+
         self._cleanup_orphans()
         self._recover()
 
@@ -112,12 +118,11 @@ class LSMTree:
         for lvl_idx, lvl in enumerate(levels):
             order = reversed(lvl) if lvl_idx == 0 else iter(lvl)
             for path in order:
-                if not os.path.exists(path):
+                rdr = self._get_reader(path)
+                if rdr is None:
                     continue
                 try:
-                    rdr = SSTableReader(path)
                     hit = rdr.get(kb)
-                    rdr.close()
                     if hit is not None:
                         val, tombstone = hit
                         return None if tombstone else _s(val)
@@ -187,6 +192,7 @@ class LSMTree:
             if len(self._memtable) > 0:
                 self._flush_memtable()
         self._wal.close()
+        self._drain_reader_cache()
 
     def stats(self) -> Dict:
         with self._lock:
@@ -201,6 +207,54 @@ class LSMTree:
             'levels'        : levels,
             'wal_bytes'     : self._wal.size_bytes,
         }
+
+    # ── reader cache ───────────────────────────────────────────────────────────
+
+    def _get_reader(self, path: str) -> Optional[SSTableReader]:
+        """Return a cached SSTableReader, opening it on first access.
+
+        Holding open readers keeps the file descriptor, Bloom filter, and
+        sparse index in memory — eliminating 3 OS reads per get() call.
+        If two threads race on the same path, only one reader is kept.
+        """
+        with self._cache_lock:
+            rdr = self._reader_cache.get(path)
+            if rdr is not None:
+                return rdr
+        if not os.path.exists(path):
+            return None
+        try:
+            rdr = SSTableReader(path)
+        except Exception:
+            return None
+        with self._cache_lock:
+            existing = self._reader_cache.get(path)
+            if existing is not None:
+                rdr.close()
+                return existing
+            self._reader_cache[path] = rdr
+        return rdr
+
+    def _evict_readers(self, paths):
+        """Close and remove readers for paths about to be deleted by compaction."""
+        with self._cache_lock:
+            for p in paths:
+                rdr = self._reader_cache.pop(p, None)
+                if rdr:
+                    try:
+                        rdr.close()
+                    except Exception:
+                        pass
+
+    def _drain_reader_cache(self):
+        """Close all cached readers on engine shutdown."""
+        with self._cache_lock:
+            for rdr in self._reader_cache.values():
+                try:
+                    rdr.close()
+                except Exception:
+                    pass
+            self._reader_cache.clear()
 
     # ── flush (called while holding _write_lock) ───────────────────────────────
 
@@ -297,6 +351,9 @@ class LSMTree:
                 outputs={dst_level: new_files},
             )
 
+        # Close cached readers before unlinking — open fds survive unlink on
+        # POSIX but the cache would hold stale entries otherwise.
+        self._evict_readers(all_inputs)
         for f in all_inputs:
             try:
                 os.remove(f)
