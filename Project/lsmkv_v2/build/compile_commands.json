@@ -1,0 +1,104 @@
+[
+{
+  "directory": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build",
+  "command": "/usr/bin/c++  -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/include\" -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -O2 -g -o CMakeFiles/lsmkv.dir/src/arena.cpp.o -c \"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/src/arena.cpp\"",
+  "file": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/src/arena.cpp",
+  "output": "CMakeFiles/lsmkv.dir/src/arena.cpp.o"
+},
+{
+  "directory": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build",
+  "command": "/usr/bin/c++  -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/include\" -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -O2 -g -o CMakeFiles/lsmkv.dir/src/bloom_filter.cpp.o -c \"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/src/bloom_filter.cpp\"",
+  "file": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/src/bloom_filter.cpp",
+  "output": "CMakeFiles/lsmkv.dir/src/bloom_filter.cpp.o"
+},
+{
+  "directory": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build",
+  "command": "/usr/bin/c++  -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/include\" -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -O2 -g -o CMakeFiles/lsmkv.dir/src/skip_list.cpp.o -c \"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/src/skip_list.cpp\"",
+  "file": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/src/skip_list.cpp",
+  "output": "CMakeFiles/lsmkv.dir/src/skip_list.cpp.o"
+},
+{
+  "directory": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build",
+  "command": "/usr/bin/c++  -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/include\" -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -O2 -g -o CMakeFiles/lsmkv.dir/src/wal.cpp.o -c \"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/src/wal.cpp\"",
+  "file": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/src/wal.cpp",
+  "output": "CMakeFiles/lsmkv.dir/src/wal.cpp.o"
+},
+{
+  "directory": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build",
+  "command": "/usr/bin/c++  -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/include\" -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -O2 -g -o CMakeFiles/lsmkv.dir/src/sstable.cpp.o -c \"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/src/sstable.cpp\"",
+  "file": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/src/sstable.cpp",
+  "output": "CMakeFiles/lsmkv.dir/src/sstable.cpp.o"
+},
+{
+  "directory": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build",
+  "command": "/usr/bin/c++  -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/include\" -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -O2 -g -o CMakeFiles/lsmkv.dir/src/block_cache.cpp.o -c \"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/src/block_cache.cpp\"",
+  "file": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/src/block_cache.cpp",
+  "output": "CMakeFiles/lsmkv.dir/src/block_cache.cpp.o"
+},
+{
+  "directory": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build",
+  "command": "/usr/bin/c++  -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/include\" -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -O2 -g -o CMakeFiles/lsmkv.dir/src/compaction.cpp.o -c \"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/src/compaction.cpp\"",
+  "file": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/src/compaction.cpp",
+  "output": "CMakeFiles/lsmkv.dir/src/compaction.cpp.o"
+},
+{
+  "directory": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build",
+  "command": "/usr/bin/c++  -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/include\" -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -O2 -g -o CMakeFiles/lsmkv.dir/src/manifest.cpp.o -c \"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/src/manifest.cpp\"",
+  "file": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/src/manifest.cpp",
+  "output": "CMakeFiles/lsmkv.dir/src/manifest.cpp.o"
+},
+{
+  "directory": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build",
+  "command": "/usr/bin/c++  -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/include\" -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -O2 -g -o CMakeFiles/lsmkv.dir/src/lsm_tree.cpp.o -c \"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/src/lsm_tree.cpp\"",
+  "file": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/src/lsm_tree.cpp",
+  "output": "CMakeFiles/lsmkv.dir/src/lsm_tree.cpp.o"
+},
+{
+  "directory": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build",
+  "command": "/usr/bin/c++  -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/include\" -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests\" -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -O2 -g -o CMakeFiles/lsmkv_tests.dir/tests/test_main.cpp.o -c \"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests/test_main.cpp\"",
+  "file": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests/test_main.cpp",
+  "output": "CMakeFiles/lsmkv_tests.dir/tests/test_main.cpp.o"
+},
+{
+  "directory": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build",
+  "command": "/usr/bin/c++  -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/include\" -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests\" -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -O2 -g -o CMakeFiles/lsmkv_tests.dir/tests/test_bloom_filter.cpp.o -c \"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests/test_bloom_filter.cpp\"",
+  "file": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests/test_bloom_filter.cpp",
+  "output": "CMakeFiles/lsmkv_tests.dir/tests/test_bloom_filter.cpp.o"
+},
+{
+  "directory": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build",
+  "command": "/usr/bin/c++  -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/include\" -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests\" -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -O2 -g -o CMakeFiles/lsmkv_tests.dir/tests/test_skip_list.cpp.o -c \"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests/test_skip_list.cpp\"",
+  "file": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests/test_skip_list.cpp",
+  "output": "CMakeFiles/lsmkv_tests.dir/tests/test_skip_list.cpp.o"
+},
+{
+  "directory": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build",
+  "command": "/usr/bin/c++  -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/include\" -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests\" -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -O2 -g -o CMakeFiles/lsmkv_tests.dir/tests/test_wal.cpp.o -c \"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests/test_wal.cpp\"",
+  "file": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests/test_wal.cpp",
+  "output": "CMakeFiles/lsmkv_tests.dir/tests/test_wal.cpp.o"
+},
+{
+  "directory": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build",
+  "command": "/usr/bin/c++  -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/include\" -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests\" -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -O2 -g -o CMakeFiles/lsmkv_tests.dir/tests/test_sstable.cpp.o -c \"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests/test_sstable.cpp\"",
+  "file": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests/test_sstable.cpp",
+  "output": "CMakeFiles/lsmkv_tests.dir/tests/test_sstable.cpp.o"
+},
+{
+  "directory": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build",
+  "command": "/usr/bin/c++  -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/include\" -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests\" -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -O2 -g -o CMakeFiles/lsmkv_tests.dir/tests/test_lsm_tree.cpp.o -c \"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests/test_lsm_tree.cpp\"",
+  "file": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests/test_lsm_tree.cpp",
+  "output": "CMakeFiles/lsmkv_tests.dir/tests/test_lsm_tree.cpp.o"
+},
+{
+  "directory": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build",
+  "command": "/usr/bin/c++  -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/include\" -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests\" -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -O2 -g -o CMakeFiles/lsmkv_tests.dir/tests/test_crash.cpp.o -c \"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests/test_crash.cpp\"",
+  "file": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/tests/test_crash.cpp",
+  "output": "CMakeFiles/lsmkv_tests.dir/tests/test_crash.cpp.o"
+},
+{
+  "directory": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build",
+  "command": "/usr/bin/c++  -I\"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/include\" -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -O2 -g -o CMakeFiles/lsmkv_bench.dir/benchmarks/bench_main.cpp.o -c \"/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/benchmarks/bench_main.cpp\"",
+  "file": "/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/benchmarks/bench_main.cpp",
+  "output": "CMakeFiles/lsmkv_bench.dir/benchmarks/bench_main.cpp.o"
+}
+]
