@@ -43,9 +43,10 @@ class OpType(IntEnum):
 
 
 class WAL:
-    def __init__(self, path: str):
-        self.path = path
-        self._f   = open(path, 'ab')
+    def __init__(self, path: str, sync_writes: bool = True):
+        self.path        = path
+        self._sync       = sync_writes
+        self._f          = open(path, 'ab')
 
     # ── write ──────────────────────────────────────────────────────────────────
 
@@ -61,7 +62,8 @@ class WAL:
         crc     = struct.pack('>I', zlib.crc32(payload) & 0xFFFFFFFF)
         self._f.write(payload + crc)
         self._f.flush()
-        fsync_fd(self._f.fileno())
+        if self._sync:
+            fsync_fd(self._f.fileno())
 
     # ── recovery ───────────────────────────────────────────────────────────────
 

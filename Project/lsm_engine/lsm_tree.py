@@ -52,16 +52,24 @@ class _E:
 # ── Engine ────────────────────────────────────────────────────────────────────
 
 class LSMTree:
-    def __init__(self, directory: str):
+    def __init__(self, directory: str, sync_writes: bool = True):
+        """
+        sync_writes=True  (default) — fsync on every WAL record.
+            Guarantees Invariant 1 (WAL Completeness) at the cost of latency.
+        sync_writes=False — WAL records are buffered; OS decides when to flush.
+            Higher throughput but acknowledged writes may be lost on power failure.
+            Used for benchmarking to isolate storage-engine overhead from I/O cost.
+        """
         self.dir = directory
         os.makedirs(directory, exist_ok=True)
 
-        self._lock       = threading.Lock()   # guards manifest + _imm
-        self._write_lock = threading.Lock()   # serialises Put/Delete/Flush
+        self._lock       = threading.Lock()
+        self._write_lock = threading.Lock()
 
-        self._memtable = SkipList()
-        self._manifest = Manifest(directory)
-        self._wal      = WAL(os.path.join(directory, 'wal.log'))
+        self._memtable   = SkipList()
+        self._manifest   = Manifest(directory)
+        self._wal        = WAL(os.path.join(directory, 'wal.log'),
+                               sync_writes=sync_writes)
 
         self._cleanup_orphans()
         self._recover()

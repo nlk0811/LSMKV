@@ -98,6 +98,44 @@ def bench_write_amp(db: LSMTree):
           f'disk_total={total_disk:,}B  levels={list(s["levels"].keys())}')
 
 
+# ── Write throughput: sync vs async ──────────────────────────────────────────
+
+def bench_sync_vs_async(n: int = 5_000):
+    results = {}
+    for label, sync in [('sync (fsync/write)', True), ('async (no fsync)', False)]:
+        if os.path.exists(DB_DIR):
+            shutil.rmtree(DB_DIR)
+        db = LSMTree(DB_DIR, sync_writes=sync)
+        keys   = [rk() for _ in range(n)]
+        values = [rv(64) for _ in range(n)]
+        t0 = time.perf_counter()
+        for k, v in zip(keys, values):
+            db.put(k, v)
+        elapsed = time.perf_counter() - t0
+        db.close()
+        results[label] = n / elapsed
+        print(f'  {label:<30}  {n/elapsed:>10,.0f} ops/sec  ({elapsed:.2f}s)')
+    overhead_x = results['async (no fsync)'] / results['sync (fsync/write)']
+    print(f'  Async is {overhead_x:.1f}× faster — fsync cost per write on this disk')
+    shutil.rmtree(DB_DIR, ignore_errors=True)
+
+
+# ── Bloom filter FPR vs bits/key ─────────────────────────────────────────────
+
+def bench_bloom_fpr_curve(n: int = 50_000):
+    print(f'  {"bits/key":>10}  {"hash_fns":>10}  {"actual FPR":>12}  {"target FPR":>12}')
+    for target in [0.10, 0.05, 0.01, 0.005, 0.001]:
+        bf = BloomFilter(n, target)
+        keys = [rk(20).encode() for _ in range(n)]
+        for k in keys:
+            bf.add(k)
+        probes = [rk(21).encode() for _ in range(5_000)]
+        fp     = sum(1 for k in probes if bf.may_contain(k))
+        actual = fp / len(probes)
+        print(f'  {bf.bit_count/n:>10.1f}  {bf.hash_count:>10}  '
+              f'{actual:>12.4%}  {target:>12.4%}')
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
@@ -105,16 +143,22 @@ if __name__ == '__main__':
     print('LSMKV Benchmarks')
     print('=' * 60)
 
-    print('\n[1] Bloom Filter False-Positive Rate')
+    print('\n[1] Bloom Filter False-Positive Rate (single point)')
     bench_bloom_fpr()
 
-    print(f'\n[2] Write / Read / Scan  (n_write={N_WRITE:,})')
+    print('\n[2] Bloom Filter FPR vs bits/key curve')
+    bench_bloom_fpr_curve()
+
+    print('\n[3] Write Sync vs Async  (isolates fsync cost)')
+    bench_sync_vs_async(n=5_000)
+
+    print(f'\n[4] Write / Read / Scan — async mode  (n_write={N_WRITE:,})')
     if os.path.exists(DB_DIR):
         shutil.rmtree(DB_DIR)
-    db = LSMTree(DB_DIR)
+    db = LSMTree(DB_DIR, sync_writes=False)
     try:
         keys = bench_write(db, N_WRITE)
-        time.sleep(1)                   # let background compaction run
+        time.sleep(1)
         bench_read(db, keys, N_READ)
         bench_scan(db, keys, N_SCAN)
         bench_write_amp(db)

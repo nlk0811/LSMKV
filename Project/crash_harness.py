@@ -47,12 +47,15 @@ log.close()
 '''
 
 
-def run_one(src_dir: str, n_keys: int, kill_after: int) -> dict:
+def run_one(src_dir: str, n_keys: int, kill_after: int, run_id: int) -> dict:
     if os.path.exists(DB_DIR):
         shutil.rmtree(DB_DIR)
     os.makedirs(DB_DIR)
 
-    log_path = '/tmp/lsm_written_keys.txt'
+    log_path = f'/tmp/lsm_written_keys_{run_id}.txt'
+    if os.path.exists(log_path):
+        os.remove(log_path)
+
     script   = _WRITER.format(src=src_dir, db=DB_DIR, log=log_path, n=n_keys)
     script_p = '/tmp/_lsm_writer_proc.py'
     with open(script_p, 'w') as f:
@@ -124,7 +127,7 @@ def main():
     for run in range(1, args.runs + 1):
         kill_at = random.randint(100, args.keys)
         print(f'\nRun {run}/{args.runs}  kill_after={kill_at:,} keys … ', end='', flush=True)
-        result = run_one(src, args.keys, kill_at)
+        result = run_one(src, args.keys, kill_at, run)
         if 'error' in result:
             print(f'ERROR: {result["error"]}')
         elif result['pass']:
