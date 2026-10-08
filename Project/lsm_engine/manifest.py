@@ -35,6 +35,9 @@ class Manifest:
         self.dir  = directory
         self.path = os.path.join(directory, 'MANIFEST.json')
         self._levels: List[List[str]] = [[] for _ in range(MAX_LEVELS)]
+        # Cache file sizes so level_size() avoids repeated stat() calls in the
+        # background compaction loop (called every 2 s × all levels × all files).
+        self._file_sizes: Dict[str, int] = {}
         self._load()
 
     # ── persistence ────────────────────────────────────────────────────────────
@@ -46,7 +49,10 @@ class Manifest:
             data = json.load(f)
         for i, files in enumerate(data.get('levels', [])):
             if i < MAX_LEVELS:
-                self._levels[i] = [fp for fp in files if os.path.exists(fp)]
+                live = [fp for fp in files if os.path.exists(fp)]
+                self._levels[i] = live
+                for fp in live:
+                    self._file_sizes[fp] = os.path.getsize(fp)
 
     def save(self):
         """Atomic write: write tmp → fsync → rename → fsync directory."""
@@ -63,6 +69,7 @@ class Manifest:
     def add_l0(self, path: str):
         """Register a newly flushed L0 SSTable. Call BEFORE WAL truncation."""
         self._levels[0].append(path)
+        self._file_sizes[path] = os.path.getsize(path)
         self.save()
 
     def apply_compaction(
@@ -80,8 +87,12 @@ class Manifest:
                     self._levels[lvl].remove(p)
                 except ValueError:
                     pass
+                self._file_sizes.pop(p, None)
         for lvl, paths in outputs.items():
             self._levels[lvl].extend(paths)
+            for p in paths:
+                if os.path.exists(p):
+                    self._file_sizes[p] = os.path.getsize(p)
         self.save()
 
     # ── read ───────────────────────────────────────────────────────────────────
@@ -94,4 +105,4 @@ class Manifest:
         return [f for lvl in self._levels for f in lvl]
 
     def level_size(self, lvl: int) -> int:
-        return sum(os.path.getsize(f) for f in self._levels[lvl] if os.path.exists(f))
+        return sum(self._file_sizes.get(f, 0) for f in self._levels[lvl])
