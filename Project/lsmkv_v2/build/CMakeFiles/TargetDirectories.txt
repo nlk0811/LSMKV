@@ -1,5 +1,0 @@
-/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build/CMakeFiles/lsmkv.dir
-/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build/CMakeFiles/lsmkv_tests.dir
-/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build/CMakeFiles/lsmkv_bench.dir
-/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build/CMakeFiles/edit_cache.dir
-/Users/lalith/Advanced Data Structures and Algorithm/Project/lsmkv_v2/build/CMakeFiles/rebuild_cache.dir
