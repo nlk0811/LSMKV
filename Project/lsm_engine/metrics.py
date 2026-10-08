@@ -31,6 +31,8 @@ class EngineMetrics:
         self.bytes_flushed    = 0
         self.compactions      = 0
         self.bytes_compacted  = 0
+        # user-visible bytes written (key+value, excludes WAL/SSTable overhead)
+        self.bytes_written_user = 0
         # scans
         self.scans        = 0
         self.scan_entries = 0     # total (key, value) pairs yielded
@@ -75,7 +77,12 @@ class EngineMetrics:
                 'wal_syncs':            self.wal_syncs,
                 'wal_gc_batches':       self.wal_gc_batches,
                 'avg_gc_batch_size':    round(self.wal_gc_records / max(1, self.wal_gc_batches), 2),
+                'bytes_written_user':   self.bytes_written_user,
                 'write_ops_per_sec':    round(total_writes / elapsed, 1),
                 'read_ops_per_sec':     round(self.gets     / elapsed, 1),
             }
+            disk_written = self.bytes_flushed + self.bytes_compacted
+            if self.bytes_written_user > 0:
+                d['write_amplification'] = round(
+                    disk_written / self.bytes_written_user, 2)
         return d
