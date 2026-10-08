@@ -164,17 +164,31 @@ when > 0. Typical sustained values: 10–30× under heavy writes.
 
 ### [S-08] Single-threaded compaction
 **File:** `lsm_engine/lsm_tree.py`
-**Status:** OPEN
+**Status:** FIXED (iteration 5)
 
-**What breaks:** One background thread handles all compactions. At very high
-write rates (L0 fills faster than one thread can compact), L0 grows past the
-trigger, increasing read amplification and eventually causing write stalls even
-with the immutable memtable.
+**What broke:** One background thread handled all compactions. At very high
+write rates, L0 accumulated faster than one thread could compact it, increasing
+read amplification and eventually causing write stalls.
 
-**Fix (planned):** Thread-pool compaction executor. Allow up to N concurrent
-compactions (one per level pair) so L0→L1 and L2→L3 can run in parallel on
-multi-core machines. Requires a per-level lock to prevent overlapping compactions
-on the same level pair.
+**Fix:**
+1. `ThreadPoolExecutor(max_workers=compaction_threads)` — default 2 workers.
+   `LSMTree(compaction_threads=N)` exposes this as a constructor parameter.
+2. Per-level locks `_compaction_locks[lvl]` — one lock per level 0..MAX_LEVELS.
+   `_compact_into()` acquires both `lock[src]` and `lock[dst]` using
+   non-blocking `acquire(blocking=False)`. If either is held by another job,
+   the current job returns immediately and the bg loop retries next tick.
+   Acquiring in ascending level order prevents deadlock.
+   Result: L0→L1 and L2→L3 run concurrently; L0→L1 and L1→L2 serialise.
+3. `_submit_compaction(lvl)` submits a future to the pool; deduplicates by
+   checking whether the previous future for that level is still running.
+4. **Write-stall back-pressure** (also added here):
+   - `L0_SLOWDOWN_TRIGGER = 8`: sleep `(n - 8 + 1) ms` per extra L0 file
+   - `L0_STOP_TRIGGER = 12`: block writes completely until L0 drains below 12
+   This matches the C++ v2 design and prevents L0 from growing unboundedly
+   under write bursts that temporarily outpace even parallel compaction.
+
+**Tests:** `tests/test_parallel_compaction.py` (8 tests) — correctness under
+threads=1/2/4, deletes, persist+reopen, concurrent writers, stall release.
 
 ---
 
@@ -189,4 +203,4 @@ on the same level pair.
 | Background loop | stat() calls per compaction tick | S-03 | **FIXED** |
 | > 100 M keys | Compaction memory / fan-in | S-06 | **FIXED** |
 | Heavy concurrent write | Compaction I/O contention | S-07 | **FIXED** |
-| Multi-core machines | Single compaction thread | S-08 | open |
+| Multi-core machines | Single compaction thread | S-08 | **FIXED** |
