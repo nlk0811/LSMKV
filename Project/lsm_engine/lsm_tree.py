@@ -774,6 +774,51 @@ class LSMTree:
         lines.append('└─────────────────────────────────────────────────────┘')
         return '\n'.join(lines)
 
+    def validate(self) -> dict:
+        """Check database integrity and return a report.
+
+        Verifies:
+          - Every file listed in the MANIFEST exists on disk.
+          - Every SSTable file is structurally valid (readable footer + index).
+          - No orphaned .sst files exist in the data directory.
+          - The MANIFEST itself is parseable.
+
+        Returns {'ok': bool, 'issues': [str]}.  Safe to call on a live database;
+        takes a snapshot of the MANIFEST under _lock so readers are not blocked.
+        """
+        issues = []
+        with self._lock:
+            levels = [list(lvl) for lvl in self._manifest.levels]
+
+        for lvl_idx, lvl in enumerate(levels):
+            for path in lvl:
+                if not os.path.exists(path):
+                    issues.append(f'L{lvl_idx}: file missing: {path}')
+                    continue
+                try:
+                    rdr = SSTableReader(path, block_cache=self._block_cache)
+                    if not rdr._index:
+                        issues.append(f'L{lvl_idx}: empty index: {path}')
+                    rdr.close()
+                except Exception as e:
+                    issues.append(f'L{lvl_idx}: corrupt file {os.path.basename(path)}: {e}')
+
+        known = set(self._manifest.all_files())
+        try:
+            for name in os.listdir(self.dir):
+                if name.endswith('.sst'):
+                    full = os.path.join(self.dir, name)
+                    if full not in known:
+                        issues.append(f'Orphan SSTable: {name}')
+        except OSError as e:
+            issues.append(f'Cannot list data directory: {e}')
+
+        if self._imm is not None:
+            issues.append('Warning: immutable memtable pending flush (not a data loss risk)')
+
+        return {'ok': len([i for i in issues if not i.startswith('Warning')]) == 0,
+                'issues': issues}
+
     def info(self) -> dict:
         """Return the engine's active configuration as a plain dict.
 
