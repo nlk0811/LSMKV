@@ -92,6 +92,7 @@ def compact(
     rate_limiter = None,
     compaction_filter = None,
     dst_level: int = 0,
+    compression: str = 'none',
 ) -> int:
     """Merge input_paths (newest first) into output_path.
 
@@ -109,7 +110,7 @@ def compact(
         return 0
 
     est_capacity = max(sum(len(r._index) * 100 for r in readers), 100)
-    writer  = SSTableWriter(output_path, bloom_capacity=est_capacity)
+    writer  = SSTableWriter(output_path, bloom_capacity=est_capacity, compression=compression)
     written = 0
     pending_bytes = 0
     BATCH = 256
