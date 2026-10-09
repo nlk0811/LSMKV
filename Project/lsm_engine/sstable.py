@@ -53,7 +53,7 @@ _COMPRESS_LEVEL  = 6   # zlib level: good balance of speed and ratio
 
 class SSTableWriter:
     def __init__(self, path: str, bloom_capacity: int = 10_000,
-                 compression: str = 'none'):
+                 compression: str = 'none', bloom_fpr: float = 0.01):
         """
         compression: 'none' (default) or 'zlib'.
         When 'zlib', each data block is compressed before writing using
@@ -65,7 +65,7 @@ class SSTableWriter:
         self._compression = compression
         self._f     = open(path, 'wb')
         self._index: List[Tuple[bytes, int, int]] = []  # (first_key, file_off, file_size)
-        self._bloom = BloomFilter(max(bloom_capacity, 100))
+        self._bloom = BloomFilter(max(bloom_capacity, 100), bloom_fpr)
         self._buf   = bytearray()
         self._file_off        = 0    # actual byte position in the file
         self._block_file_off  = 0    # file offset where current block started
