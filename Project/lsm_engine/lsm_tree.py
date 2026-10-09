@@ -303,6 +303,88 @@ class LSMTree:
         self.metrics.inc(get_misses=1)
         return None
 
+    def update(self, key, fn, ttl_seconds: float = 0):
+        """Atomically apply fn(current_value) → new_value.
+
+        The entire read-compute-write is serialized under the write lock so no
+        concurrent writer can interleave.  Concurrent readers will see either
+        the old value or the new value — never a partial state.
+
+        fn(current) receives the current value (str) or None if the key is
+        absent/deleted.  It must return the new value (str/bytes) or None to
+        delete the key.
+
+        Returns the new value written (or None for a delete).
+
+        Example — atomic counter increment:
+            db.update('hits', lambda v: str(int(v or 0) + 1))
+        """
+        with self._write_lock:
+            current = self.get(key)   # safe: get() acquires _lock not _write_lock
+            new_val = fn(current)
+            kb = _b(key)
+            if new_val is None:
+                self._wal.log_delete(kb)
+                self._memtable.delete(kb)
+                self.metrics.inc(deletes=1, wal_records=1, bytes_written_user=len(kb))
+            else:
+                vb = _b(new_val)
+                if ttl_seconds > 0:
+                    vb = _ttl_encode(vb, time.time() + ttl_seconds)
+                self._wal.log_put(kb, vb)
+                self._memtable.put(kb, vb)
+                self.metrics.inc(puts=1, wal_records=1,
+                                 bytes_written_user=len(kb) + len(vb))
+            if self._memtable.size_bytes >= MEMTABLE_LIMIT:
+                self._maybe_rotate()
+        return new_val
+
+    def compare_and_swap(self, key, expected, new_value) -> bool:
+        """Atomic compare-and-swap: set key=new_value only if current == expected.
+
+        Returns True if the swap occurred; False if the value didn't match.
+        expected=None matches a missing or deleted key.
+        new_value=None deletes the key on a successful swap.
+
+        Example — update only if no concurrent write happened:
+            if db.compare_and_swap('lock', None, 'owner_id'):
+                ...  # acquired the lock
+        """
+        with self._write_lock:
+            current = self.get(key)
+            if current != expected:
+                return False
+            kb = _b(key)
+            if new_value is None:
+                self._wal.log_delete(kb)
+                self._memtable.delete(kb)
+                self.metrics.inc(deletes=1, wal_records=1, bytes_written_user=len(kb))
+            else:
+                vb = _b(new_value)
+                self._wal.log_put(kb, vb)
+                self._memtable.put(kb, vb)
+                self.metrics.inc(puts=1, wal_records=1,
+                                 bytes_written_user=len(kb) + len(vb))
+            if self._memtable.size_bytes >= MEMTABLE_LIMIT:
+                self._maybe_rotate()
+        return True
+
+    def increment(self, key, amount: int = 1) -> int:
+        """Atomically add amount to an integer value.  Returns the new value.
+
+        If the key doesn't exist, treats the current value as 0.
+        Raises ValueError if the existing value is not a valid integer string.
+
+        Example:
+            db.increment('page_views')       # +1
+            db.increment('score', amount=10) # +10
+            db.increment('balance', -5)      # -5
+        """
+        def _inc(v):
+            return str(int(v or '0') + amount)
+        result = self.update(key, _inc)
+        return int(result)
+
     def scan(self,
              start = None,
              end   = None) -> Iterator[Tuple[str, str]]:
