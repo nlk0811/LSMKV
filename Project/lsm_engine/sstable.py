@@ -132,14 +132,30 @@ class SSTableWriter:
 # ── Reader ─────────────────────────────────────────────────────────────────────
 
 class SSTableReader:
-    def __init__(self, path: str, block_cache=None):
+    def __init__(self, path: str, block_cache=None, _template=None):
+        """Open an SSTable for reading.
+
+        _template: optional SSTableReader whose already-loaded index and Bloom
+            filter are borrowed instead of re-reading them from disk.  Used by
+            LSMTree.scan() to avoid 3 redundant disk seeks per SSTable when the
+            metadata is already resident in the reader cache.  The template's
+            file descriptor is NOT shared — a fresh fd is opened — so concurrent
+            scans and compaction eviction are both safe.
+        """
         self.path         = path
         self._f           = open(path, 'rb')
-        self._block_cache = block_cache   # optional BlockCache instance
+        self._block_cache = block_cache
         self._rlock       = __import__('threading').Lock()  # pread fallback
-        self._load_footer()
-        self._load_index()
-        self._load_bloom()
+        if _template is not None:
+            # Borrow metadata from the cached reader — no disk I/O required.
+            self._index = _template._index
+            self._bloom = _template._bloom
+            if hasattr(_template, '_last_key_cache'):
+                self._last_key_cache = _template._last_key_cache
+        else:
+            self._load_footer()
+            self._load_index()
+            self._load_bloom()
 
     # ── init helpers ───────────────────────────────────────────────────────────
 
