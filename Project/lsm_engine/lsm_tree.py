@@ -274,6 +274,15 @@ class LSMTree:
                 rdr = self._get_reader(path)
                 if rdr is None:
                     continue
+                # Key-range pre-filter: skip files whose [first_key, last_key]
+                # doesn't span kb.  Two byte comparisons vs 7 SHA-256 calls.
+                # Applied to all levels; especially valuable for large L3+.
+                fk = rdr.first_key
+                lk = rdr.last_key
+                if fk is not None and lk is not None and (kb < fk or kb > lk):
+                    self.metrics.inc(range_skips=1)
+                    continue
+                self.metrics.inc(sstable_reads=1)
                 try:
                     hit = rdr.get(kb)
                     if hit is not None:
@@ -318,9 +327,18 @@ class LSMTree:
             for path in order:
                 if not os.path.exists(path):
                     continue
+                # Key-range pre-filter for scan: skip reader if entirely outside [sb, eb)
+                cached = self._reader_cache.get(path)
+                if cached is not None:
+                    fk = cached.first_key
+                    lk = cached.last_key
+                    if fk and lk:
+                        if (eb is not None and fk >= eb) or (sb is not None and lk < sb):
+                            self.metrics.inc(range_skips=1)
+                            continue
                 self._scan_sem.acquire()
                 try:
-                    rdr = SSTableReader(path)
+                    rdr = SSTableReader(path, block_cache=self._block_cache)
                     readers.append(rdr)
                     sources.append(rdr.scan(sb, eb))
                 except Exception:
