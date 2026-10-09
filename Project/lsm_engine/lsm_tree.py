@@ -98,7 +98,8 @@ class LSMTree:
                  compaction_rate_bytes_per_sec: float = 0,
                  compaction_threads: int = 2,
                  block_cache_bytes: int = 8 * 1024 * 1024,
-                 compaction_filter=None):
+                 compaction_filter=None,
+                 compression: str = 'none'):
         """
         sync_writes=True  (default) — group-commit WAL fsync.
         sync_writes=False — no fsync; OS decides when to flush (benchmarks only).
@@ -106,10 +107,12 @@ class LSMTree:
         compaction_threads — parallel compaction workers (default 2).
         block_cache_bytes — LRU cache for 4 KB SSTable data blocks (default 8 MB).
         compaction_filter — callable(key: bytes, value: bytes, level: int) → bytes|None.
-            Called for each live entry during compaction.  Return modified value
-            to keep (possibly transformed), or None to drop the entry entirely.
-            Not called on tombstones.  Example — drop all 'tmp:' keys on compaction:
-                lambda key, val, lvl: None if key.startswith(b'tmp:') else val
+        compression: 'none' (default) or 'zlib'.
+            When 'zlib', each SSTable data block is compressed before writing.
+            Reduces disk usage by 30-90% for structured / JSON data.
+            Decompression is transparent on read; the block cache stores the
+            decompressed result so hot reads pay no CPU cost after first access.
+            Old SSTables (compression='none') are always readable.
         """
         self.dir = directory
         os.makedirs(directory, exist_ok=True)
@@ -144,6 +147,8 @@ class LSMTree:
         self._compaction_limiter  = RateLimiter(compaction_rate_bytes_per_sec)
         # Optional user-defined compaction filter.
         self._compaction_filter   = compaction_filter
+        # SSTable compression: 'none' or 'zlib'.
+        self._compression         = compression
 
         # Levels known to be sorted by first_key (enables binary search in get()).
         # Populated after each compaction that sorts the dst_level.
@@ -867,7 +872,8 @@ class LSMTree:
             ts       = int(time.time() * 1_000_000)
             tmp_path = os.path.join(self.dir, f'L0_{ts}.sst.tmp')
             sst_path = os.path.join(self.dir, f'L0_{ts}.sst')
-            writer = SSTableWriter(tmp_path, bloom_capacity=max(len(mem), 100))
+            writer = SSTableWriter(tmp_path, bloom_capacity=max(len(mem), 100),
+                                   compression=self._compression)
             for key, value, deleted in mem:
                 writer.add(key, value or b'', tombstone=deleted)
             sz = writer.finish()
@@ -898,7 +904,8 @@ class LSMTree:
         tmp_path = os.path.join(self.dir, f'L0_{ts}.sst.tmp')
         sst_path = os.path.join(self.dir, f'L0_{ts}.sst')
 
-        writer = SSTableWriter(tmp_path, bloom_capacity=max(len(mem), 100))
+        writer = SSTableWriter(tmp_path, bloom_capacity=max(len(mem), 100),
+                               compression=self._compression)
         for key, value, deleted in mem:
             writer.add(key, value or b'', tombstone=deleted)
         sz = writer.finish()                         # includes fsync
@@ -1102,7 +1109,8 @@ class LSMTree:
             written = compact(all_inputs, tmp_path, drop_tombstones=deepest,
                               rate_limiter=self._compaction_limiter,
                               compaction_filter=self._compaction_filter,
-                              dst_level=dst_level)
+                              dst_level=dst_level,
+                              compression=self._compression)
         except Exception:
             try:
                 os.remove(tmp_path)
