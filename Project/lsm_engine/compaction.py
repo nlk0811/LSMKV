@@ -90,13 +90,17 @@ def compact(
     output_path:     str,
     drop_tombstones: bool = False,
     rate_limiter = None,
+    compaction_filter = None,
+    dst_level: int = 0,
 ) -> int:
     """Merge input_paths (newest first) into output_path.
 
-    rate_limiter: optional RateLimiter instance.  When set, compaction sleeps
-    after every THROTTLE_BATCH_ENTRIES entries if it is writing faster than the
-    configured rate.  This prevents compaction from starving the write path on
-    shared storage.
+    rate_limiter: optional RateLimiter — throttle write bandwidth per-job.
+    compaction_filter: optional callable(key: bytes, value: bytes, level: int)
+        → bytes | None.  Called for each live (non-tombstone) entry.  Return
+        the (possibly modified) value to keep it, or None to drop the entry.
+        Useful for: purging a key prefix, migrating value formats, custom TTL.
+    dst_level: the destination level, passed to compaction_filter.
 
     Returns the number of entries written.
     """
@@ -108,9 +112,14 @@ def compact(
     writer  = SSTableWriter(output_path, bloom_capacity=est_capacity)
     written = 0
     pending_bytes = 0
-    BATCH = 256   # check rate limiter every 256 entries
+    BATCH = 256
 
     for key, value, tombstone in kway_merge(readers, drop_tombstones=drop_tombstones):
+        if compaction_filter is not None and not tombstone:
+            new_val = compaction_filter(key, value, dst_level)
+            if new_val is None:
+                continue   # filter dropped this entry
+            value = new_val
         writer.add(key, value, tombstone=tombstone)
         written += 1
         if rate_limiter is not None:
