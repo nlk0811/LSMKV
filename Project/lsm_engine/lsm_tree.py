@@ -145,6 +145,10 @@ class LSMTree:
         # Optional user-defined compaction filter.
         self._compaction_filter   = compaction_filter
 
+        # Levels known to be sorted by first_key (enables binary search in get()).
+        # Populated after each compaction that sorts the dst_level.
+        self._sorted_levels: set = set()
+
         # Parallel compaction: thread pool + per-level locks.
         # Two jobs may run concurrently only if they don't share a level.
         # Locks are acquired in ascending level-number order to prevent deadlock.
@@ -194,6 +198,7 @@ class LSMTree:
         Expired keys return None from get() and are skipped by scan().
         They are physically removed during deep compaction.
         """
+        _t0 = time.perf_counter()
         self._maybe_stall_writes()
         kb = _b(key)
         vb = _b(value)
@@ -206,6 +211,7 @@ class LSMTree:
                              bytes_written_user=len(kb) + len(vb))
             if self._memtable.size_bytes >= MEMTABLE_LIMIT:
                 self._maybe_rotate()
+        self.metrics.put_latency.record((time.perf_counter() - _t0) * 1_000_000)
 
     def delete(self, key):
         self._maybe_stall_writes()
@@ -238,6 +244,12 @@ class LSMTree:
                 self._maybe_rotate()
 
     def get(self, key) -> Optional[str]:
+        _t0  = time.perf_counter()
+        result = self._get(key)
+        self.metrics.get_latency.record((time.perf_counter() - _t0) * 1_000_000)
+        return result
+
+    def _get(self, key) -> Optional[str]:
         kb = _b(key)
         self.metrics.inc(gets=1)
 
@@ -276,18 +288,13 @@ class LSMTree:
             levels = [list(lvl) for lvl in self._manifest.levels]
 
         for lvl_idx, lvl in enumerate(levels):
-            order = reversed(lvl) if lvl_idx == 0 else iter(lvl)
-            for path in order:
+            if lvl_idx > 0 and lvl_idx in self._sorted_levels and lvl:
+                # Binary search: O(log n) comparisons for sorted L1+ levels.
+                path = self._binary_search_level(lvl, kb)
+                if path is None:
+                    continue
                 rdr = self._get_reader(path)
                 if rdr is None:
-                    continue
-                # Key-range pre-filter: skip files whose [first_key, last_key]
-                # doesn't span kb.  Two byte comparisons vs 7 SHA-256 calls.
-                # Applied to all levels; especially valuable for large L3+.
-                fk = rdr.first_key
-                lk = rdr.last_key
-                if fk is not None and lk is not None and (kb < fk or kb > lk):
-                    self.metrics.inc(range_skips=1)
                     continue
                 self.metrics.inc(sstable_reads=1)
                 try:
@@ -305,6 +312,34 @@ class LSMTree:
                         return _s(val)
                 except Exception:
                     continue
+            else:
+                # Linear scan with key-range pre-filter (L0 + unsorted levels).
+                order = reversed(lvl) if lvl_idx == 0 else iter(lvl)
+                for path in order:
+                    rdr = self._get_reader(path)
+                    if rdr is None:
+                        continue
+                    fk = rdr.first_key
+                    lk = rdr.last_key
+                    if fk is not None and lk is not None and (kb < fk or kb > lk):
+                        self.metrics.inc(range_skips=1)
+                        continue
+                    self.metrics.inc(sstable_reads=1)
+                    try:
+                        hit = rdr.get(kb)
+                        if hit is not None:
+                            val, tombstone = hit
+                            if tombstone:
+                                self.metrics.inc(get_misses=1)
+                                return None
+                            val, exp = _ttl_decode(val)
+                            if _ttl_expired(exp):
+                                self.metrics.inc(get_misses=1)
+                                return None
+                            self.metrics.inc(get_hits=1)
+                            return _s(val)
+                    except Exception:
+                        continue
 
         self.metrics.inc(get_misses=1)
         return None
@@ -847,6 +882,52 @@ class LSMTree:
             future = self._compaction_executor.submit(self._compact_into, src_level)
             self._compaction_futures[src_level] = future
 
+    def _binary_search_level(self, files: list, key: bytes) -> Optional[str]:
+        """Binary search in a level whose files are sorted by first_key.
+
+        Returns the single file that could contain key, or None.
+        Uses first_key and last_key from the reader cache — no disk I/O.
+        """
+        lo, hi, result = 0, len(files) - 1, -1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            rdr = self._get_reader(files[mid])
+            if rdr is None:
+                return None
+            fk = rdr.first_key
+            if fk is None:
+                return None
+            if fk <= key:
+                result = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        if result == -1:
+            return None
+        rdr = self._get_reader(files[result])
+        if rdr is None:
+            return None
+        lk = rdr.last_key
+        if lk is not None and key > lk:
+            return None   # key beyond this file's range
+        return files[result]
+
+    def _sort_level_after_compaction(self, dst_level: int):
+        """Sort dst_level files by first_key and mark the level as sorted.
+        Called immediately after a compaction commits to MANIFEST.
+        """
+        with self._lock:
+            files = list(self._manifest.levels[dst_level])
+        first_keys = {}
+        for path in files:
+            rdr = self._get_reader(path)
+            if rdr and rdr.first_key:
+                first_keys[path] = rdr.first_key
+        if len(first_keys) == len(files) and files:
+            with self._lock:
+                self._manifest.sort_level(dst_level, first_keys)
+            self._sorted_levels.add(dst_level)
+
     def _overlapping_files(self,
                            candidates: List[str],
                            reference:  List[str]) -> List[str]:
@@ -984,6 +1065,9 @@ class LSMTree:
             except OSError:
                 pass
         self.metrics.inc(compactions=1, bytes_compacted=bytes_in)
+        # Sort dst_level by first_key so future get()s can binary-search it.
+        if dst_level > 0:
+            self._sort_level_after_compaction(dst_level)
 
     def compact_range(self, start=None, end=None):
         """Force a synchronous compaction of keys in [start, end) across all levels.
