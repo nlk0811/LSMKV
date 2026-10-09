@@ -99,7 +99,8 @@ class LSMTree:
                  compaction_threads: int = 2,
                  block_cache_bytes: int = 8 * 1024 * 1024,
                  compaction_filter=None,
-                 compression: str = 'none'):
+                 compression: str = 'none',
+                 memtable_size_bytes: int = 4 * 1024 * 1024):
         """
         sync_writes=True  (default) — group-commit WAL fsync.
         sync_writes=False — no fsync; OS decides when to flush (benchmarks only).
@@ -110,9 +111,10 @@ class LSMTree:
         compression: 'none' (default) or 'zlib'.
             When 'zlib', each SSTable data block is compressed before writing.
             Reduces disk usage by 30-90% for structured / JSON data.
-            Decompression is transparent on read; the block cache stores the
-            decompressed result so hot reads pay no CPU cost after first access.
-            Old SSTables (compression='none') are always readable.
+        memtable_size_bytes: flush threshold for the active memtable (default 4 MB).
+            Larger values reduce flush frequency and write amplification but
+            increase memory usage and crash-recovery WAL replay time.
+            Smaller values reduce memory usage but increase compaction pressure.
         """
         self.dir = directory
         os.makedirs(directory, exist_ok=True)
@@ -149,10 +151,13 @@ class LSMTree:
         self._compaction_filter   = compaction_filter
         # SSTable compression: 'none' or 'zlib'.
         self._compression         = compression
+        # Memtable flush threshold (configurable; default 4 MB).
+        self._memtable_limit      = memtable_size_bytes
 
         # Levels known to be sorted by first_key (enables binary search in get()).
-        # Populated after each compaction that sorts the dst_level.
-        self._sorted_levels: set = set()
+        # Loaded from MANIFEST on startup so binary search is active immediately
+        # after a restart without waiting for the first in-session compaction.
+        self._sorted_levels: set = set(self._manifest._sorted_levels)
 
         # Parallel compaction: thread pool + per-level locks.
         # Two jobs may run concurrently only if they don't share a level.
@@ -214,7 +219,7 @@ class LSMTree:
             self._memtable.put(kb, vb)
             self.metrics.inc(puts=1, wal_records=1,
                              bytes_written_user=len(kb) + len(vb))
-            if self._memtable.size_bytes >= MEMTABLE_LIMIT:
+            if self._memtable.size_bytes >= self._memtable_limit:
                 self._maybe_rotate()
         self.metrics.put_latency.record((time.perf_counter() - _t0) * 1_000_000)
 
@@ -226,7 +231,7 @@ class LSMTree:
             self._memtable.delete(kb)
             self.metrics.inc(deletes=1, wal_records=1,
                              bytes_written_user=len(kb))
-            if self._memtable.size_bytes >= MEMTABLE_LIMIT:
+            if self._memtable.size_bytes >= self._memtable_limit:
                 self._maybe_rotate()
 
     def write(self, batch: WriteBatch):
@@ -245,7 +250,7 @@ class LSMTree:
                     self._memtable.delete(key)
             self.metrics.inc(batches=1, batch_ops=len(ops), wal_records=len(ops),
                              bytes_written_user=user_bytes)
-            if self._memtable.size_bytes >= MEMTABLE_LIMIT:
+            if self._memtable.size_bytes >= self._memtable_limit:
                 self._maybe_rotate()
 
     def get(self, key) -> Optional[str]:
@@ -381,7 +386,7 @@ class LSMTree:
                 self._memtable.put(kb, vb)
                 self.metrics.inc(puts=1, wal_records=1,
                                  bytes_written_user=len(kb) + len(vb))
-            if self._memtable.size_bytes >= MEMTABLE_LIMIT:
+            if self._memtable.size_bytes >= self._memtable_limit:
                 self._maybe_rotate()
         return new_val
 
@@ -411,7 +416,7 @@ class LSMTree:
                 self._memtable.put(kb, vb)
                 self.metrics.inc(puts=1, wal_records=1,
                                  bytes_written_user=len(kb) + len(vb))
-            if self._memtable.size_bytes >= MEMTABLE_LIMIT:
+            if self._memtable.size_bytes >= self._memtable_limit:
                 self._maybe_rotate()
         return True
 
@@ -746,6 +751,27 @@ class LSMTree:
             lines.append(f'│ write amp       {s["write_amplification"]:>10.2f}×')
         lines.append('└─────────────────────────────────────────────────────┘')
         return '\n'.join(lines)
+
+    def info(self) -> dict:
+        """Return the engine's active configuration as a plain dict.
+
+        Useful for logging, debugging, and verifying that a database was
+        opened with the expected settings.
+        """
+        return {
+            'directory':                   self.dir,
+            'sync_writes':                 self._wal._sync,
+            'compression':                 self._compression,
+            'memtable_size_bytes':         self._memtable_limit,
+            'block_cache_bytes':           self._block_cache._capacity,
+            'compaction_threads':          self._compaction_executor._max_workers,
+            'compaction_rate_bytes_per_sec': self._compaction_limiter._rate,
+            'sorted_levels':               sorted(self._sorted_levels),
+            'max_levels':                  MAX_LEVELS,
+            'l0_compact_trigger':          L0_COMPACT_TRIGGER,
+            'l0_slowdown_trigger':         L0_SLOWDOWN_TRIGGER,
+            'l0_stop_trigger':             L0_STOP_TRIGGER,
+        }
 
     def close(self):
         self._shutdown.set()
