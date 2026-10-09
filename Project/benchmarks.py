@@ -13,6 +13,7 @@ import random
 import shutil
 import string
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -136,6 +137,47 @@ def bench_bloom_fpr_curve(n: int = 50_000):
               f'{actual:>12.4%}  {target:>12.4%}')
 
 
+# ── Concurrent write throughput (group-commit batching) ──────────────────────
+
+def bench_concurrent_writes(n_threads: int = 8, n_per_thread: int = 200):
+    """Measure how well group-commit scales with concurrent writers.
+
+    With the iteration-18 fix (write-lock released before done.wait()), multiple
+    threads can submit WAL records concurrently so the gc-thread batches them in
+    one fsync.  Sequential throughput is the baseline; higher concurrency should
+    give proportionally higher total throughput.
+    """
+    results = {}
+    for label, n_t in [('sequential (1 thread)', 1), (f'concurrent ({n_threads} threads)', n_threads)]:
+        if os.path.exists(DB_DIR):
+            shutil.rmtree(DB_DIR)
+        db = LSMTree(DB_DIR, sync_writes=True)
+        total = n_t * n_per_thread
+        errors = []
+
+        def worker(tid):
+            try:
+                for i in range(n_per_thread):
+                    db.put(f't{tid}k{i:04d}', rv(32))
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(n_t)]
+        t0 = time.perf_counter()
+        for t in threads: t.start()
+        for t in threads: t.join()
+        elapsed = time.perf_counter() - t0
+
+        db.close()
+        shutil.rmtree(DB_DIR, ignore_errors=True)
+        results[n_t] = total / elapsed
+        print(f'  {label:<35}  {total/elapsed:>8,.0f} ops/sec  ({elapsed:.2f}s)  errors={errors}')
+
+    speedup = results[n_threads] / results[1]
+    print(f'  Group-commit speedup: {speedup:.1f}× with {n_threads} threads  '
+          f'(ideal would be {n_threads}×)')
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
@@ -165,5 +207,8 @@ if __name__ == '__main__':
     finally:
         db.close()
     shutil.rmtree(DB_DIR, ignore_errors=True)
+
+    print('\n[5] Concurrent Writes — group-commit batching')
+    bench_concurrent_writes(n_threads=8, n_per_thread=200)
 
     print('\nDone.')
