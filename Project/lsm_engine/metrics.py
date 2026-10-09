@@ -1,17 +1,81 @@
 """
 Engine Metrics
 ==============
-Thread-safe counters updated on every operation.
+Thread-safe counters and latency histograms updated on every operation.
 Access via db.metrics or included in db.stats().
 """
 import threading
 import time
 
 
+class LatencyTracker:
+    """Bucketed histogram for tracking operation latency in microseconds.
+
+    Buckets cover 1 µs to 10 s.  All values above the highest bucket are
+    counted in the overflow bucket.  Percentile queries are O(buckets) ≈ O(1).
+    """
+    _BUCKETS_US = [1, 2, 5, 10, 25, 50, 100, 250, 500,
+                   1_000, 2_500, 5_000, 10_000, 50_000, 100_000]
+
+    def __init__(self):
+        self._counts    = [0] * (len(self._BUCKETS_US) + 1)
+        self._n         = 0
+        self._total_us  = 0.0
+        self._lock      = threading.Lock()
+
+    def record(self, us: float):
+        with self._lock:
+            self._n += 1
+            self._total_us += us
+            for i, b in enumerate(self._BUCKETS_US):
+                if us <= b:
+                    self._counts[i] += 1
+                    return
+            self._counts[-1] += 1
+
+    def percentile(self, p: float) -> float:
+        """Return the p-th percentile in microseconds (p in [0, 100])."""
+        with self._lock:
+            if self._n == 0:
+                return 0.0
+            target = self._n * p / 100.0
+            cumulative = 0
+            for i, count in enumerate(self._counts):
+                cumulative += count
+                if cumulative >= target:
+                    if i < len(self._BUCKETS_US):
+                        return float(self._BUCKETS_US[i])
+                    return float('inf')
+        return float('inf')
+
+    @property
+    def mean_us(self) -> float:
+        with self._lock:
+            return self._total_us / max(1, self._n)
+
+    @property
+    def count(self) -> int:
+        with self._lock:
+            return self._n
+
+    def snapshot(self, prefix: str) -> dict:
+        """Return a dict with p50/p99/p999/mean keyed by prefix."""
+        return {
+            f'{prefix}_p50_us':  round(self.percentile(50),  1),
+            f'{prefix}_p99_us':  round(self.percentile(99),  1),
+            f'{prefix}_p999_us': round(self.percentile(99.9), 1),
+            f'{prefix}_mean_us': round(self.mean_us,           1),
+            f'{prefix}_count':   self.count,
+        }
+
+
 class EngineMetrics:
     def __init__(self):
         self._lock  = threading.Lock()
         self._start = time.monotonic()
+        # Latency histograms (µs buckets)
+        self.get_latency = LatencyTracker()
+        self.put_latency = LatencyTracker()
         # writes
         self.puts    = 0
         self.deletes = 0
@@ -89,4 +153,6 @@ class EngineMetrics:
             if self.bytes_written_user > 0:
                 d['write_amplification'] = round(
                     disk_written / self.bytes_written_user, 2)
+        d.update(self.get_latency.snapshot('get'))
+        d.update(self.put_latency.snapshot('put'))
         return d
