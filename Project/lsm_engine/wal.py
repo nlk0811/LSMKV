@@ -42,7 +42,7 @@ import threading
 import time
 import zlib
 from enum import IntEnum
-from typing import Iterator, List, Tuple
+from typing import Iterator, List, Optional, Tuple
 
 from ._utils import fsync_fd
 
