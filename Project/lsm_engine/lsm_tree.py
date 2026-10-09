@@ -44,6 +44,7 @@ from .manifest     import Manifest, MAX_LEVELS
 from .metrics      import EngineMetrics
 from .skip_list    import SkipList
 from .sstable      import SSTableReader, SSTableWriter
+from .ttl          import encode as _ttl_encode, decode as _ttl_decode, is_expired as _ttl_expired
 from .wal          import WAL, OpType
 from .write_batch  import WriteBatch
 from ._utils       import fsync_fd, fsync_dir, RateLimiter
@@ -178,9 +179,18 @@ class LSMTree:
         elif n >= L0_SLOWDOWN_TRIGGER:
             time.sleep((n - L0_SLOWDOWN_TRIGGER + 1) * 0.001)
 
-    def put(self, key, value):
+    def put(self, key, value, ttl_seconds: float = 0):
+        """Insert or overwrite a key.
+
+        ttl_seconds > 0 — the key expires that many seconds from now.
+        Expired keys return None from get() and are skipped by scan().
+        They are physically removed during deep compaction.
+        """
         self._maybe_stall_writes()
-        kb = _b(key); vb = _b(value)
+        kb = _b(key)
+        vb = _b(value)
+        if ttl_seconds > 0:
+            vb = _ttl_encode(vb, time.time() + ttl_seconds)
         with self._write_lock:
             self._wal.log_put(kb, vb)
             self._memtable.put(kb, vb)
@@ -230,6 +240,10 @@ class LSMTree:
             if deleted:
                 self.metrics.inc(get_misses=1)
                 return None
+            val, exp = _ttl_decode(val)
+            if _ttl_expired(exp):
+                self.metrics.inc(get_misses=1)
+                return None
             self.metrics.inc(get_hits=1)
             return _s(val)
 
@@ -240,6 +254,10 @@ class LSMTree:
             if r is not None:
                 val, deleted = r
                 if deleted:
+                    self.metrics.inc(get_misses=1)
+                    return None
+                val, exp = _ttl_decode(val)
+                if _ttl_expired(exp):
                     self.metrics.inc(get_misses=1)
                     return None
                 self.metrics.inc(get_hits=1)
@@ -260,6 +278,10 @@ class LSMTree:
                     if hit is not None:
                         val, tombstone = hit
                         if tombstone:
+                            self.metrics.inc(get_misses=1)
+                            return None
+                        val, exp = _ttl_decode(val)
+                        if _ttl_expired(exp):
                             self.metrics.inc(get_misses=1)
                             return None
                         self.metrics.inc(get_hits=1)
@@ -326,8 +348,11 @@ class LSMTree:
                 last = e.key
                 if e.tomb:
                     continue
+                val, exp = _ttl_decode(e.val)
+                if _ttl_expired(exp):
+                    continue
                 entries += 1
-                yield _s(e.key), _s(e.val)
+                yield _s(e.key), _s(val)
         finally:
             self.metrics.inc(scan_entries=entries)
             for rdr in readers:
