@@ -97,15 +97,19 @@ class LSMTree:
     def __init__(self, directory: str, sync_writes: bool = True,
                  compaction_rate_bytes_per_sec: float = 0,
                  compaction_threads: int = 2,
-                 block_cache_bytes: int = 8 * 1024 * 1024):
+                 block_cache_bytes: int = 8 * 1024 * 1024,
+                 compaction_filter=None):
         """
         sync_writes=True  (default) — group-commit WAL fsync.
         sync_writes=False — no fsync; OS decides when to flush (benchmarks only).
         compaction_rate_bytes_per_sec — throttle compaction I/O (0 = unlimited).
         compaction_threads — parallel compaction workers (default 2).
         block_cache_bytes — LRU cache for 4 KB SSTable data blocks (default 8 MB).
-            Hot blocks stay in memory; reduces read latency from ~100 µs (NVMe)
-            to ~1 µs for cached keys.  0 = disabled.
+        compaction_filter — callable(key: bytes, value: bytes, level: int) → bytes|None.
+            Called for each live entry during compaction.  Return modified value
+            to keep (possibly transformed), or None to drop the entry entirely.
+            Not called on tombstones.  Example — drop all 'tmp:' keys on compaction:
+                lambda key, val, lvl: None if key.startswith(b'tmp:') else val
         """
         self.dir = directory
         os.makedirs(directory, exist_ok=True)
@@ -137,7 +141,9 @@ class LSMTree:
         self._scan_sem = threading.Semaphore(MAX_SCAN_FDS)
 
         # Compaction I/O rate limiter (unlimited when rate == 0).
-        self._compaction_limiter = RateLimiter(compaction_rate_bytes_per_sec)
+        self._compaction_limiter  = RateLimiter(compaction_rate_bytes_per_sec)
+        # Optional user-defined compaction filter.
+        self._compaction_filter   = compaction_filter
 
         # Parallel compaction: thread pool + per-level locks.
         # Two jobs may run concurrently only if they don't share a level.
@@ -479,6 +485,54 @@ class LSMTree:
         """Like scan() but yields only keys — no value fetch overhead."""
         for key, _ in self.scan(start, end):
             yield key
+
+    def get_many(self, keys) -> Dict[str, Optional[str]]:
+        """Retrieve multiple keys in one call.
+
+        Returns a dict mapping each requested key to its value (str) or None
+        if the key is absent, deleted, or TTL-expired.
+
+        Example:
+            results = db.get_many(['user:1', 'user:2', 'user:3'])
+            # {'user:1': 'Alice', 'user:2': None, 'user:3': 'Carol'}
+        """
+        return {k: self.get(k) for k in keys}
+
+    def backup(self, backup_dir: str) -> dict:
+        """Create a consistent hot backup of all flushed SSTables.
+
+        Flushes the memtable first so the backup includes the latest writes,
+        then captures a snapshot and copies all SSTable files + MANIFEST into
+        backup_dir.  The backup directory is a valid LSMTree database:
+            restored = LSMTree(backup_dir)
+
+        Returns {'files': int, 'bytes': int} with the backup totals.
+        No data is lost or corrupted if a crash happens during the copy
+        because the source files are immutable SSTables.
+        """
+        import shutil as _shutil
+        self.flush()
+        snap = self.snapshot()
+        os.makedirs(backup_dir, exist_ok=True)
+
+        files = 0
+        total_bytes = 0
+        for lvl in snap._levels:
+            for path in lvl:
+                if not os.path.exists(path):
+                    continue
+                dest = os.path.join(backup_dir, os.path.basename(path))
+                _shutil.copy2(path, dest)
+                total_bytes += os.path.getsize(dest)
+                files += 1
+
+        # Copy MANIFEST so the backup directory is self-contained
+        manifest_src = os.path.join(self.dir, 'MANIFEST.json')
+        if os.path.exists(manifest_src):
+            _shutil.copy2(manifest_src, backup_dir)
+
+        snap.close()
+        return {'files': files, 'bytes': total_bytes}
 
     def flush(self):
         """Force-flush the active memtable (and any pending immutable) to disk.
@@ -889,10 +943,12 @@ class LSMTree:
         sst_path   = os.path.join(self.dir, f'L{dst_level}_{ts}.sst')
         deepest    = (dst_level == MAX_LEVELS - 1)
 
-        self._compaction_limiter.reset()   # fresh token bucket per job
+        self._compaction_limiter.reset()
         try:
             written = compact(all_inputs, tmp_path, drop_tombstones=deepest,
-                              rate_limiter=self._compaction_limiter)
+                              rate_limiter=self._compaction_limiter,
+                              compaction_filter=self._compaction_filter,
+                              dst_level=dst_level)
         except Exception:
             try:
                 os.remove(tmp_path)
