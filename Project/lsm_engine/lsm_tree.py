@@ -53,6 +53,11 @@ from ._utils       import fsync_fd, fsync_dir, RateLimiter
 
 MEMTABLE_LIMIT      = 4 * 1024 * 1024   # 4 MB before flush
 L0_COMPACT_TRIGGER  = 4                  # trigger L0→L1 compaction
+# Bloom filter FPR by destination level.
+# Shallower levels (L0-L2) are accessed frequently → keep FPR low.
+# Deeper levels (L5-L6) have many files and binary search narrows candidates;
+# a higher FPR saves memory at the cost of occasional extra disk reads.
+_BLOOM_FPR_BY_LEVEL = {0: 0.01, 1: 0.01, 2: 0.01, 3: 0.02, 4: 0.05, 5: 0.10, 6: 0.10}
 L0_SLOWDOWN_TRIGGER = 8                  # start slowing writes (1 ms per extra file)
 L0_STOP_TRIGGER     = 12                 # stall writes completely until L0 drains
 BASE_LEVEL_BYTES    = 10 * 1024 * 1024  # 10 MB budget for L1
@@ -1152,12 +1157,14 @@ class LSMTree:
         deepest    = (dst_level == MAX_LEVELS - 1)
 
         self._compaction_limiter.reset()
+        bloom_fpr = _BLOOM_FPR_BY_LEVEL.get(dst_level, 0.01)
         try:
             written = compact(all_inputs, tmp_path, drop_tombstones=deepest,
                               rate_limiter=self._compaction_limiter,
                               compaction_filter=self._compaction_filter,
                               dst_level=dst_level,
-                              compression=self._compression)
+                              compression=self._compression,
+                              bloom_fpr=bloom_fpr)
         except Exception:
             try:
                 os.remove(tmp_path)
