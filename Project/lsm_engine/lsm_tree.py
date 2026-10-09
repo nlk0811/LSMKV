@@ -467,7 +467,11 @@ class LSMTree:
                             continue
                 self._scan_sem.acquire()
                 try:
-                    rdr = SSTableReader(path, block_cache=self._block_cache)
+                    # If a cached reader exists, borrow its index + Bloom filter
+                    # to avoid 3 redundant disk seeks (footer, index, bloom).
+                    template = self._reader_cache.get(path)
+                    rdr = SSTableReader(path, block_cache=self._block_cache,
+                                        _template=template)
                     readers.append(rdr)
                     sources.append(rdr.scan(sb, eb))
                 except Exception:
