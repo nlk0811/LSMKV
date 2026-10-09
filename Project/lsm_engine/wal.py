@@ -78,22 +78,43 @@ class WAL:
     # ── write ──────────────────────────────────────────────────────────────────
 
     def log_put(self, key: bytes, value: bytes):
-        self._write(OpType.PUT, key, value)
+        """Submit a PUT record and block until durable (backward-compatible)."""
+        done = self._submit(self._make_record(OpType.PUT, key, value))
+        if done:
+            done.wait()
 
     def log_delete(self, key: bytes):
-        self._write(OpType.DELETE, key, b'')
+        done = self._submit(self._make_record(OpType.DELETE, key, b''))
+        if done:
+            done.wait()
 
     def log_batch(self, ops):
-        """Write a sequence of (op_int, key, value) tuples with one fsync.
+        """Submit all ops as one combined record and block until durable."""
+        done = self._submit_batch(ops)
+        if done:
+            done.wait()
 
-        More efficient than N separate log_put/log_delete calls when
-        sync_writes=True because only one group-commit submission is made,
-        so the batch competes for at most one fsync slot.
+    # ── non-blocking submit methods (return Event; caller waits outside lock) ───
+
+    def submit_put(self, key: bytes, value: bytes) -> Optional[threading.Event]:
+        """Queue a PUT record for group-commit.  Returns an Event the caller must
+        wait on (outside any locks) before returning to the user.  Returns None
+        when sync_writes=False (no waiting needed).
+
+        This is the key to efficient concurrent group-commit: by releasing the
+        write-lock before calling event.wait(), multiple writers can overlap
+        their WAL submissions, letting the gc-thread batch them in one fsync
+        instead of one fsync per writer.
         """
-        if not ops:
-            return
-        combined = b''.join(self._make_record(op, key, value) for op, key, value in ops)
-        self._write_raw(combined)
+        return self._submit(self._make_record(OpType.PUT, key, value))
+
+    def submit_delete(self, key: bytes) -> Optional[threading.Event]:
+        return self._submit(self._make_record(OpType.DELETE, key, b''))
+
+    def submit_batch(self, ops) -> Optional[threading.Event]:
+        return self._submit_batch(ops)
+
+    # ── internals ──────────────────────────────────────────────────────────────
 
     def _make_record(self, op, key: bytes, value: bytes) -> bytes:
         hdr     = struct.pack(_HDR_FMT, int(op), len(key), len(value), time.time())
@@ -101,30 +122,34 @@ class WAL:
         crc     = struct.pack('>I', zlib.crc32(payload) & 0xFFFFFFFF)
         return payload + crc
 
-    def _write(self, op: OpType, key: bytes, value: bytes):
-        self._write_raw(self._make_record(op, key, value))
-
-    def _write_raw(self, data: bytes):
-        """Write raw bytes (one or more records) with appropriate durability."""
+    def _submit(self, data: bytes) -> Optional[threading.Event]:
+        """Queue data for group commit.  Returns an Event (or None for async mode).
+        The caller is responsible for calling event.wait() to ensure durability.
+        """
         if not self._sync:
             with self._file_lock:
                 self._f.write(data)
                 self._f.flush()
-            return
-
-        # Group-commit: submit and block until flushed
+            return None
         with self._gc_lock:
             if self._gc_shutdown:
-                # Fallback: write directly (engine is shutting down)
                 with self._file_lock:
                     self._f.write(data)
                     self._f.flush()
                     fsync_fd(self._f.fileno())
-                return
+                done = threading.Event()
+                done.set()
+                return done
             done = threading.Event()
             self._gc_pending.append((data, done))
             self._gc_cv.notify()
-        done.wait()
+        return done
+
+    def _submit_batch(self, ops) -> Optional[threading.Event]:
+        if not ops:
+            return None
+        combined = b''.join(self._make_record(op, key, value) for op, key, value in ops)
+        return self._submit(combined)
 
     # ── group-commit loop ──────────────────────────────────────────────────────
 
@@ -179,9 +204,17 @@ class WAL:
     def truncate(self):
         """Discard all WAL contents.
         MUST only be called after the SSTable + MANIFEST are durable.
-        All records in the WAL have already been waited-on by their callers
-        (done.wait()), so _gc_pending is empty at this point.
+
+        Any records still pending in _gc_pending at truncation time have
+        already been flushed to an SSTable (the flush that triggered the
+        truncation included them).  We signal their done events so callers
+        outside the write-lock unblock correctly.
         """
+        if self._sync:
+            with self._gc_lock:
+                pending, self._gc_pending[:] = self._gc_pending[:], []
+            for _, done in pending:
+                done.set()   # data is in SSTable — caller can safely return
         with self._file_lock:
             self._f.close()
             with open(self.path, 'wb') as f:
