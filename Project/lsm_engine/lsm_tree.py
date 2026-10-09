@@ -105,7 +105,8 @@ class LSMTree:
                  block_cache_bytes: int = 8 * 1024 * 1024,
                  compaction_filter=None,
                  compression: str = 'none',
-                 memtable_size_bytes: int = 4 * 1024 * 1024):
+                 memtable_size_bytes: int = 4 * 1024 * 1024,
+                 prefix_compression: bool = True):
         """
         sync_writes=True  (default) — group-commit WAL fsync.
         sync_writes=False — no fsync; OS decides when to flush (benchmarks only).
@@ -156,6 +157,8 @@ class LSMTree:
         self._compaction_filter   = compaction_filter
         # SSTable compression: 'none' or 'zlib'.
         self._compression         = compression
+        # SSTable prefix key compression (default True).
+        self._prefix_compression  = prefix_compression
         # Memtable flush threshold (configurable; default 4 MB).
         self._memtable_limit      = memtable_size_bytes
 
@@ -970,7 +973,8 @@ class LSMTree:
             tmp_path = os.path.join(self.dir, f'L0_{ts}.sst.tmp')
             sst_path = os.path.join(self.dir, f'L0_{ts}.sst')
             writer = SSTableWriter(tmp_path, bloom_capacity=max(len(mem), 100),
-                                   compression=self._compression)
+                                   compression=self._compression,
+                                   prefix_compression=self._prefix_compression)
             for key, value, deleted in mem:
                 writer.add(key, value or b'', tombstone=deleted)
             sz = writer.finish()
@@ -1002,7 +1006,8 @@ class LSMTree:
         sst_path = os.path.join(self.dir, f'L0_{ts}.sst')
 
         writer = SSTableWriter(tmp_path, bloom_capacity=max(len(mem), 100),
-                               compression=self._compression)
+                               compression=self._compression,
+                               prefix_compression=self._prefix_compression)
         for key, value, deleted in mem:
             writer.add(key, value or b'', tombstone=deleted)
         sz = writer.finish()                         # includes fsync
@@ -1209,7 +1214,8 @@ class LSMTree:
                               compaction_filter=self._compaction_filter,
                               dst_level=dst_level,
                               compression=self._compression,
-                              bloom_fpr=bloom_fpr)
+                              bloom_fpr=bloom_fpr,
+                              prefix_compression=self._prefix_compression)
         except Exception:
             try:
                 os.remove(tmp_path)
