@@ -106,3 +106,13 @@ class Manifest:
 
     def level_size(self, lvl: int) -> int:
         return sum(self._file_sizes.get(f, 0) for f in self._levels[lvl])
+
+    def sort_level(self, lvl: int, first_keys: dict):
+        """Re-order level's file list by first_key for binary search.
+
+        first_keys: {path → first_key_bytes} for every file in the level.
+        Files missing from first_keys sort to the end (conservative).
+        Persists the sorted order to disk atomically.
+        """
+        self._levels[lvl].sort(key=lambda p: first_keys.get(p) or b'\xff' * 1000)
+        self.save()
