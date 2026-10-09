@@ -35,9 +35,12 @@ class Manifest:
         self.dir  = directory
         self.path = os.path.join(directory, 'MANIFEST.json')
         self._levels: List[List[str]] = [[] for _ in range(MAX_LEVELS)]
-        # Cache file sizes so level_size() avoids repeated stat() calls in the
-        # background compaction loop (called every 2 s × all levels × all files).
+        # Cache file sizes so level_size() avoids repeated stat() calls.
         self._file_sizes: Dict[str, int] = {}
+        # Levels whose file list is sorted by first_key (enables binary search).
+        # Persisted in MANIFEST.json so binary search is active from first read
+        # after a restart, not only after the first in-session compaction.
+        self._sorted_levels: set = set()
         self._load()
 
     # ── persistence ────────────────────────────────────────────────────────────
@@ -53,12 +56,16 @@ class Manifest:
                 self._levels[i] = live
                 for fp in live:
                     self._file_sizes[fp] = os.path.getsize(fp)
+        self._sorted_levels = set(data.get('sorted_levels', []))
 
     def save(self):
         """Atomic write: write tmp → fsync → rename → fsync directory."""
         tmp = self.path + '.tmp'
         with open(tmp, 'w') as f:
-            json.dump({'levels': self._levels}, f, indent=2)
+            json.dump({
+                'levels':        self._levels,
+                'sorted_levels': sorted(self._sorted_levels),
+            }, f, indent=2)
             f.flush()
             fsync_fd(f.fileno())
         os.rename(tmp, self.path)
@@ -112,7 +119,9 @@ class Manifest:
 
         first_keys: {path → first_key_bytes} for every file in the level.
         Files missing from first_keys sort to the end (conservative).
-        Persists the sorted order to disk atomically.
+        Persists the sorted order and marks the level sorted in the MANIFEST
+        so binary search is active from the first read after the next restart.
         """
         self._levels[lvl].sort(key=lambda p: first_keys.get(p) or b'\xff' * 1000)
+        self._sorted_levels.add(lvl)
         self.save()
