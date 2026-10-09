@@ -24,8 +24,10 @@ class EngineMetrics:
         # SSTable reader cache
         self.cache_hits   = 0     # _get_reader() returned cached reader
         self.cache_misses = 0     # _get_reader() had to open file
-        # Bloom filter
+        # Read path filtering
         self.bloom_skips  = 0     # SSTables skipped by Bloom filter
+        self.range_skips  = 0     # SSTables skipped by key-range pre-filter
+        self.sstable_reads = 0    # SSTables where a block was actually read
         # flush / compaction
         self.flushes          = 0
         self.bytes_flushed    = 0
@@ -67,6 +69,8 @@ class EngineMetrics:
                 'cache_misses':         self.cache_misses,
                 'cache_hit_rate':       round(self.cache_hits / max(1, total_cache), 4),
                 'bloom_skips':          self.bloom_skips,
+                'range_skips':          self.range_skips,
+                'sstable_reads':        self.sstable_reads,
                 'flushes':              self.flushes,
                 'bytes_flushed':        self.bytes_flushed,
                 'compactions':          self.compactions,
