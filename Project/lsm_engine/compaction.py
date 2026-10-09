@@ -94,6 +94,7 @@ def compact(
     dst_level: int = 0,
     compression: str = 'none',
     bloom_fpr: float = 0.01,
+    prefix_compression: bool = True,
 ) -> int:
     """Merge input_paths (newest first) into output_path.
 
@@ -112,7 +113,8 @@ def compact(
 
     est_capacity = max(sum(len(r._index) * 100 for r in readers), 100)
     writer  = SSTableWriter(output_path, bloom_capacity=est_capacity,
-                            compression=compression, bloom_fpr=bloom_fpr)
+                            compression=compression, bloom_fpr=bloom_fpr,
+                            prefix_compression=prefix_compression)
     written = 0
     pending_bytes = 0
     BATCH = 256
