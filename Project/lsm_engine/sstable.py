@@ -36,10 +36,31 @@ from ._utils import fsync_fd
 
 BLOCK_SIZE    = 4096
 _ENTRY_FMT    = '>IIB'
-_ENTRY_HDR    = struct.calcsize(_ENTRY_FMT)   # 9 bytes
+_ENTRY_HDR    = struct.calcsize(_ENTRY_FMT)   # 9 bytes (key_len, val_len, flags)
 _FOOTER_FMT   = '>QQII8s'
 _FOOTER_SIZE  = struct.calcsize(_FOOTER_FMT)  # 32 bytes
 _MAGIC        = b'SSTABLE1'
+
+# ── Prefix-compressed entry format ────────────────────────────────────────────
+# Used when SSTableWriter(prefix_compression=True).  Adjacent entries in the same
+# block share a common key prefix that is stored only once per block restart point.
+#
+#   shared_prefix_len : 2 bytes (uint16)  — bytes shared with previous key
+#   key_suffix_len    : 2 bytes (uint16)  — remaining key bytes
+#   val_len           : 4 bytes (uint32)
+#   flags             : 1 byte            (0x01 = tombstone)
+#   key_suffix        : key_suffix_len bytes
+#   value             : val_len bytes
+#
+# Block markers (first 2 bytes of the stored block):
+#   \xff\x01  — zlib-compressed,  old entry format  (existing)
+#   \xff\x02  — uncompressed,     prefix-compressed format  (new)
+#   \xff\x03  — zlib-compressed,  prefix-compressed format  (new)
+#   no marker — uncompressed,     old entry format  (backward compat)
+_PC_FMT     = '>HHIB'               # shared(H), suffix_len(H), val_len(I), flags(B)
+_PC_HDR     = struct.calcsize(_PC_FMT)   # 9 bytes (same overhead as old format)
+_PC_MARKER  = b'\xff\x02'
+_PCZ_MARKER = b'\xff\x03'
 
 
 # ── Writer ─────────────────────────────────────────────────────────────────────
@@ -53,28 +74,42 @@ _COMPRESS_LEVEL  = 6   # zlib level: good balance of speed and ratio
 
 class SSTableWriter:
     def __init__(self, path: str, bloom_capacity: int = 10_000,
-                 compression: str = 'none', bloom_fpr: float = 0.01):
+                 compression: str = 'none', bloom_fpr: float = 0.01,
+                 prefix_compression: bool = True):
         """
-        compression: 'none' (default) or 'zlib'.
-        When 'zlib', each data block is compressed before writing using
-        _COMPRESS_MARKER + zlib.compress(block_bytes).  Reduces disk usage
-        by 30-90% for structured data.  Old SSTables (compression='none')
-        are still readable by the new reader without any migration.
+        compression: 'none' or 'zlib' (block-level zlib compression).
+        prefix_compression: store only the key suffix for adjacent keys sharing
+            a common prefix within a block.  Reduces key storage by up to 89%
+            for clustered keys (e.g. 'user:0001' … 'user:9999').
+            Default True.  Old SSTables (False) are always readable.
+        bloom_fpr: target false-positive rate for the per-file Bloom filter.
         """
-        self.path         = path
-        self._compression = compression
+        self.path               = path
+        self._compression       = compression
+        self._prefix_compression = prefix_compression
         self._f     = open(path, 'wb')
-        self._index: List[Tuple[bytes, int, int]] = []  # (first_key, file_off, file_size)
+        self._index: List[Tuple[bytes, int, int]] = []
         self._bloom = BloomFilter(max(bloom_capacity, 100), bloom_fpr)
         self._buf   = bytearray()
-        self._file_off        = 0    # actual byte position in the file
-        self._block_file_off  = 0    # file offset where current block started
+        self._file_off        = 0
+        self._block_file_off  = 0
         self._block_first_key: Optional[bytes] = None
+        self._block_last_key:  bytes           = b''   # for prefix delta encoding
 
     def add(self, key: bytes, value: bytes, tombstone: bool = False):
         flags = 0x01 if tombstone else 0x00
         v     = b'' if tombstone else value
-        entry = struct.pack(_ENTRY_FMT, len(key), len(v), flags) + key + v
+        if self._prefix_compression:
+            # Compute shared prefix length with the previous key in this block
+            shared = 0
+            mn = min(len(key), len(self._block_last_key))
+            while shared < mn and key[shared] == self._block_last_key[shared]:
+                shared += 1
+            suffix = key[shared:]
+            entry = struct.pack(_PC_FMT, shared, len(suffix), len(v), flags) + suffix + v
+            self._block_last_key = key
+        else:
+            entry = struct.pack(_ENTRY_FMT, len(key), len(v), flags) + key + v
         if self._block_first_key is None:
             self._block_first_key = key
         self._buf += entry
@@ -86,7 +121,11 @@ class SSTableWriter:
         if not self._buf:
             return
         raw = bytes(self._buf)
-        if self._compression == 'zlib':
+        if self._prefix_compression and self._compression == 'zlib':
+            data = _PCZ_MARKER + zlib.compress(raw, _COMPRESS_LEVEL)
+        elif self._prefix_compression:
+            data = _PC_MARKER + raw
+        elif self._compression == 'zlib':
             data = _COMPRESS_MARKER + zlib.compress(raw, _COMPRESS_LEVEL)
         else:
             data = raw
@@ -95,6 +134,7 @@ class SSTableWriter:
         self._file_off       += len(data)
         self._block_file_off  = self._file_off
         self._block_first_key = None
+        self._block_last_key  = b''   # reset at each block boundary
         self._buf             = bytearray()
 
     def finish(self) -> int:
@@ -201,7 +241,8 @@ class SSTableReader:
             return None
         idx = self._block_idx(key)
         _, off, sz = self._index[idx]
-        return self._search_block(off, sz, key)
+        data, is_pc = self._read_block(off, sz)
+        return self._search_pc_block(data, key) if is_pc else self._search_block(data, key)
 
     def scan(self,
              start: Optional[bytes] = None,
@@ -212,19 +253,23 @@ class SSTableReader:
         for fk, off, sz in self._index[si:]:
             if end and fk >= end:
                 break
-            data, pos = self._read_block(off, sz), 0
-            while pos < len(data):
-                if pos + _ENTRY_HDR > len(data):
-                    break
-                klen, vlen, flags = struct.unpack(_ENTRY_FMT, data[pos:pos+_ENTRY_HDR])
-                pos  += _ENTRY_HDR
-                key   = data[pos:pos+klen];  pos += klen
-                value = data[pos:pos+vlen];  pos += vlen
-                if start and key < start:
-                    continue
-                if end and key >= end:
-                    return
-                yield key, value, bool(flags & 0x01)
+            data, is_pc = self._read_block(off, sz)
+            if is_pc:
+                yield from self._scan_pc_block(data, start, end)
+            else:
+                pos, last_key_in_block = 0, b''
+                while pos < len(data):
+                    if pos + _ENTRY_HDR > len(data):
+                        break
+                    klen, vlen, flags = struct.unpack(_ENTRY_FMT, data[pos:pos+_ENTRY_HDR])
+                    pos  += _ENTRY_HDR
+                    key   = data[pos:pos+klen];  pos += klen
+                    value = data[pos:pos+vlen];  pos += vlen
+                    if start and key < start:
+                        continue
+                    if end and key >= end:
+                        return
+                    yield key, value, bool(flags & 0x01)
 
     # ── helpers ────────────────────────────────────────────────────────────────
 
@@ -240,27 +285,38 @@ class SSTableReader:
                 hi = mid - 1
         return result
 
-    def _read_block(self, off: int, sz: int) -> bytes:
-        """Read a data block, serving from the block cache when available.
+    def _read_block(self, off: int, sz: int) -> Tuple[bytes, bool]:
+        """Read a data block, returning (block_bytes, is_prefix_compressed).
 
-        Uses os.pread() for an atomic positional read (no seek+read race).
-        Transparently decompresses zlib-compressed blocks — the block cache
-        stores the decompressed result so subsequent hits pay no CPU cost.
+        block_bytes: decoded payload (zlib-decompressed if needed, marker stripped).
+        is_prefix_compressed: True if entries use the prefix-compressed format.
 
-        Backward-compatible: blocks without the _COMPRESS_MARKER are returned
-        verbatim, so SSTables written by any prior version are still readable.
+        Uses os.pread() for atomic positional reads.  The block cache stores
+        the decoded payload (minus marker, after zlib) so hot reads are free.
         """
         if self._block_cache is not None:
             key  = (self.path, off)
-            data = self._block_cache.get(key)
-            if data is not None:
-                return data
-        raw = self._pread(off, sz)
-        if raw[:2] == _COMPRESS_MARKER:
-            raw = zlib.decompress(raw[2:])
+            cached = self._block_cache.get(key)
+            if cached is not None:
+                # Cache stores (bytes, is_pc) as a 2-tuple.
+                if isinstance(cached, tuple):
+                    return cached
+                return cached, False   # legacy cache entry (plain bytes)
+        raw   = self._pread(off, sz)
+        is_pc = False
+        if raw[:2] == _PCZ_MARKER:             # prefix-compressed + zlib
+            raw   = zlib.decompress(raw[2:])
+            is_pc = True
+        elif raw[:2] == _PC_MARKER:            # prefix-compressed, no zlib
+            raw   = raw[2:]
+            is_pc = True
+        elif raw[:2] == _COMPRESS_MARKER:      # zlib only, old entry format
+            raw   = zlib.decompress(raw[2:])
+        # else: old entry format, no compression
+        result = (raw, is_pc)
         if self._block_cache is not None:
-            self._block_cache.put((self.path, off), raw)
-        return raw
+            self._block_cache.put((self.path, off), result)
+        return result
 
     def _pread(self, off: int, sz: int) -> bytes:
         """Atomic positional read: os.pread where available, seek+read elsewhere."""
@@ -272,8 +328,9 @@ class SSTableReader:
                 self._f.seek(off)
                 return self._f.read(sz)
 
-    def _search_block(self, off: int, sz: int, target: bytes) -> Optional[Tuple[bytes, bool]]:
-        data, pos = self._read_block(off, sz), 0
+    def _search_block(self, data: bytes, target: bytes) -> Optional[Tuple[bytes, bool]]:
+        """Linear scan of an old-format (non-prefix-compressed) block."""
+        pos = 0
         while pos < len(data):
             if pos + _ENTRY_HDR > len(data):
                 break
@@ -284,6 +341,42 @@ class SSTableReader:
             if key == target:
                 return (value, bool(flags & 0x01))
         return None
+
+    def _search_pc_block(self, data: bytes, target: bytes) -> Optional[Tuple[bytes, bool]]:
+        """Linear scan of a prefix-compressed block for target key."""
+        pos, last_key = 0, b''
+        while pos < len(data):
+            if pos + _PC_HDR > len(data):
+                break
+            shared, suf_len, vlen, flags = struct.unpack(_PC_FMT, data[pos:pos+_PC_HDR])
+            pos += _PC_HDR
+            suffix = data[pos:pos+suf_len]; pos += suf_len
+            value  = data[pos:pos+vlen];   pos += vlen
+            key    = last_key[:shared] + suffix
+            last_key = key
+            if key == target:
+                return (value, bool(flags & 0x01))
+        return None
+
+    def _scan_pc_block(self, data: bytes,
+                       start: Optional[bytes], end: Optional[bytes]
+                       ) -> Iterator[Tuple[bytes, bytes, bool]]:
+        """Iterate a prefix-compressed block, yielding entries in [start, end)."""
+        pos, last_key = 0, b''
+        while pos < len(data):
+            if pos + _PC_HDR > len(data):
+                break
+            shared, suf_len, vlen, flags = struct.unpack(_PC_FMT, data[pos:pos+_PC_HDR])
+            pos += _PC_HDR
+            suffix = data[pos:pos+suf_len]; pos += suf_len
+            value  = data[pos:pos+vlen];   pos += vlen
+            key    = last_key[:shared] + suffix
+            last_key = key
+            if start and key < start:
+                continue
+            if end and key >= end:
+                return
+            yield key, value, bool(flags & 0x01)
 
     @property
     def first_key(self) -> Optional[bytes]:
@@ -302,14 +395,28 @@ class SSTableReader:
             return cached
         _, off, sz = self._index[-1]
         try:
-            data, pos, last = self._read_block(off, sz), 0, None
-            while pos < len(data):
-                if pos + _ENTRY_HDR > len(data):
-                    break
-                klen, vlen, _ = struct.unpack(_ENTRY_FMT, data[pos:pos+_ENTRY_HDR])
-                pos += _ENTRY_HDR
-                last  = data[pos:pos+klen]
-                pos  += klen + vlen
+            data, is_pc = self._read_block(off, sz)
+            last = None
+            if is_pc:
+                last_key_pc = b''
+                pos = 0
+                while pos < len(data):
+                    if pos + _PC_HDR > len(data):
+                        break
+                    shared, suf_len, vlen, _ = struct.unpack(_PC_FMT, data[pos:pos+_PC_HDR])
+                    pos += _PC_HDR
+                    suffix = data[pos:pos+suf_len]; pos += suf_len + vlen
+                    last = last_key_pc[:shared] + suffix
+                    last_key_pc = last
+            else:
+                pos = 0
+                while pos < len(data):
+                    if pos + _ENTRY_HDR > len(data):
+                        break
+                    klen, vlen, _ = struct.unpack(_ENTRY_FMT, data[pos:pos+_ENTRY_HDR])
+                    pos += _ENTRY_HDR
+                    last  = data[pos:pos+klen]
+                    pos  += klen + vlen
             self._last_key_cache = last
             return last
         except Exception:
