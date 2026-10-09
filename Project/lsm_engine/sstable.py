@@ -111,9 +111,10 @@ class SSTableWriter:
 # ── Reader ─────────────────────────────────────────────────────────────────────
 
 class SSTableReader:
-    def __init__(self, path: str):
-        self.path = path
-        self._f   = open(path, 'rb')
+    def __init__(self, path: str, block_cache=None):
+        self.path         = path
+        self._f           = open(path, 'rb')
+        self._block_cache = block_cache   # optional BlockCache instance
         self._load_footer()
         self._load_index()
         self._load_bloom()
@@ -173,8 +174,7 @@ class SSTableReader:
         for fk, off, sz in self._index[si:]:
             if end and fk >= end:
                 break
-            self._f.seek(off)
-            data, pos = self._f.read(sz), 0
+            data, pos = self._read_block(off, sz), 0
             while pos < len(data):
                 if pos + _ENTRY_HDR > len(data):
                     break
@@ -202,9 +202,22 @@ class SSTableReader:
                 hi = mid - 1
         return result
 
-    def _search_block(self, off: int, sz: int, target: bytes) -> Optional[Tuple[bytes, bool]]:
+    def _read_block(self, off: int, sz: int) -> bytes:
+        """Read a data block, serving from the block cache when available."""
+        if self._block_cache is not None:
+            key  = (self.path, off)
+            data = self._block_cache.get(key)
+            if data is not None:
+                return data
+            self._f.seek(off)
+            data = self._f.read(sz)
+            self._block_cache.put(key, data)
+            return data
         self._f.seek(off)
-        data, pos = self._f.read(sz), 0
+        return self._f.read(sz)
+
+    def _search_block(self, off: int, sz: int, target: bytes) -> Optional[Tuple[bytes, bool]]:
+        data, pos = self._read_block(off, sz), 0
         while pos < len(data):
             if pos + _ENTRY_HDR > len(data):
                 break
@@ -233,8 +246,7 @@ class SSTableReader:
             return cached
         _, off, sz = self._index[-1]
         try:
-            self._f.seek(off)
-            data, pos, last = self._f.read(sz), 0, None
+            data, pos, last = self._read_block(off, sz), 0, None
             while pos < len(data):
                 if pos + _ENTRY_HDR > len(data):
                     break
