@@ -115,6 +115,7 @@ class SSTableReader:
         self.path         = path
         self._f           = open(path, 'rb')
         self._block_cache = block_cache   # optional BlockCache instance
+        self._rlock       = __import__('threading').Lock()  # pread fallback
         self._load_footer()
         self._load_index()
         self._load_bloom()
@@ -203,18 +204,33 @@ class SSTableReader:
         return result
 
     def _read_block(self, off: int, sz: int) -> bytes:
-        """Read a data block, serving from the block cache when available."""
+        """Read a data block, serving from the block cache when available.
+
+        Uses os.pread() — a single atomic positional read that does not change
+        the file's seek position.  This eliminates the seek+read race when
+        multiple threads share one SSTableReader instance via the reader cache,
+        and reduces the syscall count from 2 to 1.
+        Falls back to seek+read on platforms without pread (non-POSIX).
+        """
         if self._block_cache is not None:
             key  = (self.path, off)
             data = self._block_cache.get(key)
             if data is not None:
                 return data
-            self._f.seek(off)
-            data = self._f.read(sz)
+            data = self._pread(off, sz)
             self._block_cache.put(key, data)
             return data
-        self._f.seek(off)
-        return self._f.read(sz)
+        return self._pread(off, sz)
+
+    def _pread(self, off: int, sz: int) -> bytes:
+        """Atomic positional read: os.pread where available, seek+read elsewhere."""
+        try:
+            return os.pread(self._f.fileno(), sz, off)
+        except AttributeError:
+            # Windows — fall back to seek+read under a per-instance lock
+            with self._rlock:
+                self._f.seek(off)
+                return self._f.read(sz)
 
     def _search_block(self, off: int, sz: int, target: bytes) -> Optional[Tuple[bytes, bool]]:
         data, pos = self._read_block(off, sz), 0
