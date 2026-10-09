@@ -569,6 +569,75 @@ class LSMTree:
         snap.close()
         return {'files': files, 'bytes': total_bytes}
 
+    def wait_for_compaction(self, timeout_seconds: float = 60) -> bool:
+        """Block until all scheduled compaction jobs finish.
+
+        Returns True if all compactions completed within the timeout, False
+        if the timeout expired with jobs still running.  Useful in tests and
+        benchmarks where a known-clean state is required before measuring reads.
+        """
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            with self._compaction_fut_lock:
+                still_running = [f for f in self._compaction_futures.values()
+                                 if not f.done()]
+            if not still_running:
+                return True
+            time.sleep(0.05)
+        return False
+
+    def compact_all(self, timeout_seconds: float = 300) -> dict:
+        """Flush all in-memory data and fully compact all levels.  Blocks until done.
+
+        Useful before a backup, before performance benchmarking of read-heavy
+        workloads, or to pre-compact a database before handing it to consumers.
+
+        Algorithm:
+          1. flush() — move memtable + imm to L0 SSTables.
+          2. Repeat: schedule all eligible compactions, wait for them to finish,
+             until no more compactions are triggered.
+
+        Returns {'compactions_run': int, 'elapsed_seconds': float}.
+        """
+        t0 = time.monotonic()
+        self.flush()
+
+        compactions_before = self.metrics.snapshot()['compactions']
+        while True:
+            self._schedule_compactions()
+            self.wait_for_compaction(timeout_seconds)
+            compactions_after = self.metrics.snapshot()['compactions']
+            if compactions_after == compactions_before:
+                break   # no new compactions — fully compacted
+            compactions_before = compactions_after
+
+        return {
+            'compactions_run':   self.metrics.snapshot()['compactions'],
+            'elapsed_seconds':   round(time.monotonic() - t0, 2),
+        }
+
+    def iter_batches(self,
+                     batch_size: int = 100,
+                     start = None,
+                     end   = None):
+        """Yield lists of (key, value) pairs in sorted order, `batch_size` at a time.
+
+        Useful for bulk processing, ETL, or streaming exports without loading
+        all keys into memory at once.
+
+        Example — export in pages of 1000:
+            for batch in db.iter_batches(batch_size=1000, start='user:'):
+                write_to_warehouse(batch)
+        """
+        batch = []
+        for kv in self.scan(start, end):
+            batch.append(kv)
+            if len(batch) >= batch_size:
+                yield batch
+                batch = []
+        if batch:
+            yield batch
+
     def flush(self):
         """Force-flush the active memtable (and any pending immutable) to disk.
 
@@ -651,11 +720,15 @@ class LSMTree:
                 f'│ {lvl:<4}           {info["bytes"]:>10,} B   '
                 f'{info["files"]:>3} file(s)'
             )
+        gp50 = s.get('get_p50_us', 0)
+        gp99 = s.get('get_p99_us', 0)
+        pp50 = s.get('put_p50_us', 0)
+        pp99 = s.get('put_p99_us', 0)
         lines += [
             f'│ block cache     {s.get("block_cache_bytes", 0):>10,} B   '
                 f'hit={s.get("block_cache_hit_rate", 0):.1%}',
-            f'│ puts            {s.get("puts", 0):>10,}   '
-                f'gets={s.get("gets", 0):,}',
+            f'│ puts  {s.get("puts", 0):>10,}   p50={pp50:.0f}µs  p99={pp99:.0f}µs',
+            f'│ gets  {s.get("gets", 0):>10,}   p50={gp50:.0f}µs  p99={gp99:.0f}µs',
             f'│ get hit rate    {s.get("get_hit_rate", 0):>10.1%}',
             f'│ compactions     {s.get("compactions", 0):>10,}   '
                 f'flushes={s.get("flushes", 0):,}',
