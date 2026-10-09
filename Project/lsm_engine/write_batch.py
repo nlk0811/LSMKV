@@ -35,6 +35,19 @@ class WriteBatch:
         self._ops.append((_OpType.PUT, _to_bytes(key), _to_bytes(value)))
         return self
 
+    def put_ttl(self, key, value, ttl_seconds: float) -> 'WriteBatch':
+        """Stage a put with a TTL.  The key expires ttl_seconds from now.
+
+        Equivalent to put() but the value is TTL-encoded so that get() and
+        scan() return None/skip the entry once the TTL has elapsed.
+        """
+        import time
+        from .ttl import encode as _ttl_encode
+        expires_at = time.time() + ttl_seconds
+        encoded    = _ttl_encode(_to_bytes(value), expires_at)
+        self._ops.append((_OpType.PUT, _to_bytes(key), encoded))
+        return self
+
     def delete(self, key) -> 'WriteBatch':
         """Stage a delete (tombstone). Returns self for chaining."""
         self._ops.append((_OpType.DELETE, _to_bytes(key), b''))
