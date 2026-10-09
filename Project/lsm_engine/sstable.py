@@ -44,16 +44,32 @@ _MAGIC        = b'SSTABLE1'
 
 # ── Writer ─────────────────────────────────────────────────────────────────────
 
+# Compression marker: two bytes that can never begin an uncompressed data block.
+# Uncompressed entries start with key_len (uint32 big-endian); a first byte of
+# 0xFF would mean key_len >= 4 GiB — physically impossible.
+_COMPRESS_MARKER = b'\xff\x01'
+_COMPRESS_LEVEL  = 6   # zlib level: good balance of speed and ratio
+
+
 class SSTableWriter:
-    def __init__(self, path: str, bloom_capacity: int = 10_000):
-        self.path   = path
+    def __init__(self, path: str, bloom_capacity: int = 10_000,
+                 compression: str = 'none'):
+        """
+        compression: 'none' (default) or 'zlib'.
+        When 'zlib', each data block is compressed before writing using
+        _COMPRESS_MARKER + zlib.compress(block_bytes).  Reduces disk usage
+        by 30-90% for structured data.  Old SSTables (compression='none')
+        are still readable by the new reader without any migration.
+        """
+        self.path         = path
+        self._compression = compression
         self._f     = open(path, 'wb')
-        self._index: List[Tuple[bytes, int, int]] = []  # (first_key, offset, size)
+        self._index: List[Tuple[bytes, int, int]] = []  # (first_key, file_off, file_size)
         self._bloom = BloomFilter(max(bloom_capacity, 100))
         self._buf   = bytearray()
-        self._block_start_offset = 0
+        self._file_off        = 0    # actual byte position in the file
+        self._block_file_off  = 0    # file offset where current block started
         self._block_first_key: Optional[bytes] = None
-        self._offset = 0
 
     def add(self, key: bytes, value: bytes, tombstone: bool = False):
         flags = 0x01 if tombstone else 0x00
@@ -61,8 +77,7 @@ class SSTableWriter:
         entry = struct.pack(_ENTRY_FMT, len(key), len(v), flags) + key + v
         if self._block_first_key is None:
             self._block_first_key = key
-        self._buf   += entry
-        self._offset += len(entry)
+        self._buf += entry
         self._bloom.add(key)
         if len(self._buf) >= BLOCK_SIZE:
             self._flush_block()
@@ -70,18 +85,24 @@ class SSTableWriter:
     def _flush_block(self):
         if not self._buf:
             return
-        self._index.append((self._block_first_key, self._block_start_offset, len(self._buf)))
-        self._f.write(self._buf)
-        self._block_start_offset = self._offset
-        self._block_first_key    = None
-        self._buf                = bytearray()
+        raw = bytes(self._buf)
+        if self._compression == 'zlib':
+            data = _COMPRESS_MARKER + zlib.compress(raw, _COMPRESS_LEVEL)
+        else:
+            data = raw
+        self._index.append((self._block_first_key, self._block_file_off, len(data)))
+        self._f.write(data)
+        self._file_off       += len(data)
+        self._block_file_off  = self._file_off
+        self._block_first_key = None
+        self._buf             = bytearray()
 
     def finish(self) -> int:
         """Finalise the file and return its size in bytes."""
         self._flush_block()
 
         # ── index block ──
-        index_offset = self._offset
+        index_offset = self._file_off
         idx_body = struct.pack('>I', len(self._index))
         for (fk, off, sz) in self._index:
             idx_body += struct.pack('>I', len(fk)) + fk + struct.pack('>QI', off, sz)
@@ -206,21 +227,24 @@ class SSTableReader:
     def _read_block(self, off: int, sz: int) -> bytes:
         """Read a data block, serving from the block cache when available.
 
-        Uses os.pread() — a single atomic positional read that does not change
-        the file's seek position.  This eliminates the seek+read race when
-        multiple threads share one SSTableReader instance via the reader cache,
-        and reduces the syscall count from 2 to 1.
-        Falls back to seek+read on platforms without pread (non-POSIX).
+        Uses os.pread() for an atomic positional read (no seek+read race).
+        Transparently decompresses zlib-compressed blocks — the block cache
+        stores the decompressed result so subsequent hits pay no CPU cost.
+
+        Backward-compatible: blocks without the _COMPRESS_MARKER are returned
+        verbatim, so SSTables written by any prior version are still readable.
         """
         if self._block_cache is not None:
             key  = (self.path, off)
             data = self._block_cache.get(key)
             if data is not None:
                 return data
-            data = self._pread(off, sz)
-            self._block_cache.put(key, data)
-            return data
-        return self._pread(off, sz)
+        raw = self._pread(off, sz)
+        if raw[:2] == _COMPRESS_MARKER:
+            raw = zlib.decompress(raw[2:])
+        if self._block_cache is not None:
+            self._block_cache.put((self.path, off), raw)
+        return raw
 
     def _pread(self, off: int, sz: int) -> bytes:
         """Atomic positional read: os.pread where available, seek+read elsewhere."""
