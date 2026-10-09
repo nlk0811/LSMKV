@@ -207,6 +207,11 @@ class LSMTree:
         ttl_seconds > 0 — the key expires that many seconds from now.
         Expired keys return None from get() and are skipped by scan().
         They are physically removed during deep compaction.
+
+        Group-commit optimisation: the WAL record is submitted inside the
+        write-lock (non-blocking) then the lock is released before waiting
+        for the fsync event.  This lets concurrent writers overlap their WAL
+        submissions so the gc-thread can batch them in one fsync.
         """
         _t0 = time.perf_counter()
         self._maybe_stall_writes()
@@ -215,24 +220,28 @@ class LSMTree:
         if ttl_seconds > 0:
             vb = _ttl_encode(vb, time.time() + ttl_seconds)
         with self._write_lock:
-            self._wal.log_put(kb, vb)
+            _done = self._wal.submit_put(kb, vb)   # non-blocking submit
             self._memtable.put(kb, vb)
             self.metrics.inc(puts=1, wal_records=1,
                              bytes_written_user=len(kb) + len(vb))
             if self._memtable.size_bytes >= self._memtable_limit:
                 self._maybe_rotate()
+        if _done:
+            _done.wait()   # wait OUTSIDE write-lock — allows concurrent batching
         self.metrics.put_latency.record((time.perf_counter() - _t0) * 1_000_000)
 
     def delete(self, key):
         self._maybe_stall_writes()
         kb = _b(key)
         with self._write_lock:
-            self._wal.log_delete(kb)
+            _done = self._wal.submit_delete(kb)
             self._memtable.delete(kb)
             self.metrics.inc(deletes=1, wal_records=1,
                              bytes_written_user=len(kb))
             if self._memtable.size_bytes >= self._memtable_limit:
                 self._maybe_rotate()
+        if _done:
+            _done.wait()
 
     def write(self, batch: WriteBatch):
         """Apply a WriteBatch atomically: one lock, one WAL fsync, all memtable inserts."""
@@ -242,7 +251,7 @@ class LSMTree:
         ops = list(batch)
         user_bytes = sum(len(k) + len(v) for _, k, v in ops)
         with self._write_lock:
-            self._wal.log_batch([(op, key, value) for op, key, value in ops])
+            _done = self._wal.submit_batch([(op, key, value) for op, key, value in ops])
             for op, key, value in ops:
                 if int(op) == 1:   # PUT
                     self._memtable.put(key, value)
@@ -252,6 +261,8 @@ class LSMTree:
                              bytes_written_user=user_bytes)
             if self._memtable.size_bytes >= self._memtable_limit:
                 self._maybe_rotate()
+        if _done:
+            _done.wait()
 
     def get(self, key) -> Optional[str]:
         _t0  = time.perf_counter()
@@ -370,24 +381,27 @@ class LSMTree:
         Example — atomic counter increment:
             db.update('hits', lambda v: str(int(v or 0) + 1))
         """
+        _done = None
         with self._write_lock:
-            current = self.get(key)   # safe: get() acquires _lock not _write_lock
+            current = self.get(key)
             new_val = fn(current)
             kb = _b(key)
             if new_val is None:
-                self._wal.log_delete(kb)
+                _done = self._wal.submit_delete(kb)
                 self._memtable.delete(kb)
                 self.metrics.inc(deletes=1, wal_records=1, bytes_written_user=len(kb))
             else:
                 vb = _b(new_val)
                 if ttl_seconds > 0:
                     vb = _ttl_encode(vb, time.time() + ttl_seconds)
-                self._wal.log_put(kb, vb)
+                _done = self._wal.submit_put(kb, vb)
                 self._memtable.put(kb, vb)
                 self.metrics.inc(puts=1, wal_records=1,
                                  bytes_written_user=len(kb) + len(vb))
             if self._memtable.size_bytes >= self._memtable_limit:
                 self._maybe_rotate()
+        if _done:
+            _done.wait()
         return new_val
 
     def compare_and_swap(self, key, expected, new_value) -> bool:
@@ -401,23 +415,26 @@ class LSMTree:
             if db.compare_and_swap('lock', None, 'owner_id'):
                 ...  # acquired the lock
         """
+        _done = None
         with self._write_lock:
             current = self.get(key)
             if current != expected:
                 return False
             kb = _b(key)
             if new_value is None:
-                self._wal.log_delete(kb)
+                _done = self._wal.submit_delete(kb)
                 self._memtable.delete(kb)
                 self.metrics.inc(deletes=1, wal_records=1, bytes_written_user=len(kb))
             else:
                 vb = _b(new_value)
-                self._wal.log_put(kb, vb)
+                _done = self._wal.submit_put(kb, vb)
                 self._memtable.put(kb, vb)
                 self.metrics.inc(puts=1, wal_records=1,
                                  bytes_written_user=len(kb) + len(vb))
             if self._memtable.size_bytes >= self._memtable_limit:
                 self._maybe_rotate()
+        if _done:
+            _done.wait()
         return True
 
     def increment(self, key, amount: int = 1) -> int:
