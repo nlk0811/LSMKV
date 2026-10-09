@@ -37,6 +37,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+from .block_cache  import BlockCache
 from .bloom_filter import BloomFilter
 from .compaction   import compact
 from .manifest     import Manifest, MAX_LEVELS
@@ -92,14 +93,16 @@ def _prefix_end(prefix: bytes) -> Optional[bytes]:
 class LSMTree:
     def __init__(self, directory: str, sync_writes: bool = True,
                  compaction_rate_bytes_per_sec: float = 0,
-                 compaction_threads: int = 2):
+                 compaction_threads: int = 2,
+                 block_cache_bytes: int = 8 * 1024 * 1024):
         """
         sync_writes=True  (default) — group-commit WAL fsync.
         sync_writes=False — no fsync; OS decides when to flush (benchmarks only).
         compaction_rate_bytes_per_sec — throttle compaction I/O (0 = unlimited).
         compaction_threads — parallel compaction workers (default 2).
-            L0→L1 and L2→L3 can run simultaneously; adjacent level pairs serialise
-            via per-level locks so no two jobs ever touch the same level.
+        block_cache_bytes — LRU cache for 4 KB SSTable data blocks (default 8 MB).
+            Hot blocks stay in memory; reduces read latency from ~100 µs (NVMe)
+            to ~1 µs for cached keys.  0 = disabled.
         """
         self.dir = directory
         os.makedirs(directory, exist_ok=True)
@@ -122,6 +125,10 @@ class LSMTree:
         # Evicted when compaction removes files; drained on close().
         self._reader_cache: Dict[str, SSTableReader] = {}
         self._cache_lock   = threading.Lock()
+
+        # Block cache: LRU cache for 4 KB data blocks across all open SSTables.
+        # Shared across all SSTableReaders; evicted per-path on compaction.
+        self._block_cache = BlockCache(block_cache_bytes)
 
         # Scan fd semaphore: prevents a single scan from exhausting the OS fd limit.
         self._scan_sem = threading.Semaphore(MAX_SCAN_FDS)
@@ -367,7 +374,29 @@ class LSMTree:
             'wal_bytes'     : self._wal.size_bytes,
         }
         base.update(self.metrics.snapshot())
+        base.update(self._block_cache.stats())
         return base
+
+    def estimate_key_count(self) -> int:
+        """Estimate the total number of live keys across memtable and all SSTables.
+
+        Uses the Bloom filter capacity stored in each SSTable as a proxy for
+        the number of entries written to that file.  Deduplication and tombstones
+        mean the true live key count may be lower, but this is a fast O(levels)
+        estimate that requires no disk I/O beyond what is already cached.
+        """
+        count = len(self._memtable)
+        if self._imm is not None:
+            count += len(self._imm)
+        with self._lock:
+            levels = [list(lvl) for lvl in self._manifest.levels]
+        for lvl in levels:
+            for path in lvl:
+                rdr = self._get_reader(path)
+                if rdr is not None:
+                    # _bloom.capacity is the number of entries added at write time
+                    count += rdr._bloom.capacity
+        return count
 
     # ── reader cache ───────────────────────────────────────────────────────────
 
@@ -383,7 +412,7 @@ class LSMTree:
         if not os.path.exists(path):
             return None
         try:
-            rdr = SSTableReader(path)
+            rdr = SSTableReader(path, block_cache=self._block_cache)
         except Exception:
             return None
         with self._cache_lock:
@@ -397,7 +426,7 @@ class LSMTree:
         return rdr
 
     def _evict_readers(self, paths):
-        """Close and remove readers for paths about to be deleted by compaction."""
+        """Close readers and evict block-cache entries for paths being deleted."""
         with self._cache_lock:
             for p in paths:
                 rdr = self._reader_cache.pop(p, None)
@@ -406,6 +435,8 @@ class LSMTree:
                         rdr.close()
                     except Exception:
                         pass
+        for p in paths:
+            self._block_cache.evict_path(p)
 
     def _drain_reader_cache(self):
         with self._cache_lock:
