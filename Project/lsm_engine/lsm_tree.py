@@ -42,6 +42,7 @@ from .bloom_filter import BloomFilter
 from .compaction   import compact
 from .cursor       import Cursor
 from .manifest     import Manifest, MAX_LEVELS
+from .snapshot     import Snapshot
 from .metrics      import EngineMetrics
 from .skip_list    import SkipList
 from .sstable      import SSTableReader, SSTableWriter
@@ -396,6 +397,36 @@ class LSMTree:
         """Like scan() but yields only keys — no value fetch overhead."""
         for key, _ in self.scan(start, end):
             yield key
+
+    def flush(self):
+        """Force-flush the active memtable (and any pending immutable) to disk.
+
+        Useful before taking a snapshot to ensure all recent writes are
+        included, or before a graceful shutdown checkpoint.  Blocks until
+        the flush is complete and the MANIFEST is updated.  The WAL is
+        truncated after the flush.
+        """
+        with self._write_lock:
+            if self._imm is not None:
+                self._flush_imm()
+            if len(self._memtable) > 0:
+                self._flush_memtable()
+
+    def snapshot(self) -> Snapshot:
+        """Return a point-in-time read-only view of all flushed SSTables.
+
+        The snapshot captures the set of SSTable files at this instant.
+        Concurrent writes after the snapshot are invisible to it.
+        The active memtable is NOT included unless flush() is called first.
+
+        Example:
+            db.flush()                    # include latest writes
+            with db.snapshot() as snap:
+                v = snap.get('key')
+                for k, v in snap.scan():
+                    ...
+        """
+        return Snapshot(self)
 
     def cursor(self) -> Cursor:
         """Return a new stateful Cursor over this database.
