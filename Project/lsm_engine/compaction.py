@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterator, List, Optional, Tuple
 
 from .sstable import SSTableReader, SSTableWriter, _ENTRY_HDR
+from .ttl     import decode as _ttl_decode, is_expired as _ttl_expired
 
 
 @dataclass(order=True)
@@ -75,6 +76,11 @@ def kway_merge(
 
         if drop_tombstones and e.tomb:
             continue        # safe to drop tombstones at deepest level
+
+        if drop_tombstones and not e.tomb:
+            _, exp = _ttl_decode(e.val)
+            if _ttl_expired(exp):
+                continue    # drop expired TTL entries at deepest level
 
         yield e.key, e.val, e.tomb
 
