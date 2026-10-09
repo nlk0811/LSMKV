@@ -1,6 +1,6 @@
 # LSMKV
 
-[![Python Tests](https://img.shields.io/badge/python%20tests-91%2F91%20passing-brightgreen)](#testing)
+[![Python Tests](https://img.shields.io/badge/python%20tests-161%2F161%20passing-brightgreen)](#testing)
 [![C++ Tests](https://img.shields.io/badge/c%2B%2B%20tests-43%2F43%20passing-brightgreen)](#testing)
 [![Crash Recovery](https://img.shields.io/badge/crash%20recovery-5%2F5%20PASS-brightgreen)](#crash-recovery)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](#license)
@@ -50,6 +50,18 @@ Five scaling bottlenecks have been found, diagnosed, and fixed (see [SCALING_ISS
 - **Leveled compaction** — 7-level tiered compaction, background thread, tombstone GC
 - **MANIFEST** — atomic POSIX `rename()` as the compaction commit point
 - **Scan fd semaphore** — concurrent scans share at most 64 open SSTable file descriptors
+- **Cursor API** — stateful seek + pagination: `db.cursor().seek(key)`, context-manager, iterator protocol
+- **TTL** — `put(key, value, ttl_seconds=N)`, `WriteBatch.put_ttl()`, auto-filtered in scan()
+- **Block-level LRU cache** — hot 4 KB data blocks stay in memory; default 8 MB
+- **Parallel compaction** — thread pool, per-level locks, non-adjacent levels run concurrently
+- **Write-stall back-pressure** — slowdown at L0 ≥ 8 files; hard stop at L0 ≥ 12
+- **Compaction I/O throttling** — `compaction_rate_bytes_per_sec` prevents starving writes
+- **`delete_prefix(prefix)`** — atomic namespace cleanup, one WAL fsync
+- **`scan_keys()`** — iterate keys only, no value fetch overhead
+- **`compact_range(start, end)`** — manual synchronous range compaction
+- **`estimate_key_count()`** — O(levels) key count estimate, no disk I/O
+- **Write amplification metric** — `snapshot()["write_amplification"]`
+- **`stats_report()`** — formatted dashboard summary string
 - **Zero dependencies** — Python standard library only (v1)
 - **C++ v2** — group-commit WAL, arena-backed SkipList, LRU block cache, write stall, `shared_mutex`
 
@@ -155,6 +167,12 @@ db->Close();
 | `write` | `write(batch: WriteBatch)` | Apply all batch operations atomically with one WAL fsync. |
 | `scan` | `scan(start=None, end=None) -> Iterator[(str, str)]` | Range scan, inclusive start / exclusive end. Tombstones excluded. |
 | `prefix_scan` | `prefix_scan(prefix) -> Iterator[(str, str)]` | Yield all keys that start with `prefix`, sorted. |
+| `scan_keys` | `scan_keys(start=None, end=None) -> Iterator[str]` | Keys only, no value fetch overhead. |
+| `cursor` | `cursor() -> Cursor` | Stateful Cursor for seek + pagination. Use as context manager. |
+| `delete_prefix` | `delete_prefix(prefix) -> int` | Atomic delete of all keys with prefix. Returns count. |
+| `compact_range` | `compact_range(start=None, end=None)` | Synchronous range compaction across all levels. |
+| `estimate_key_count` | `estimate_key_count() -> int` | Fast key count estimate using Bloom filter capacities. |
+| `stats_report` | `stats_report() -> str` | Formatted multi-line engine summary for dashboards. |
 | `stats` | `stats() -> dict` | Engine stats + full metrics snapshot merged into one dict. |
 | `close` | `close()` | Flush memtable, stop background thread, close WAL. |
 
@@ -262,7 +280,7 @@ With the immutable memtable, background flushes do **not** truncate the WAL (the
 
 ## Testing
 
-### Python test suite (91 tests)
+### Python test suite (161 tests)
 
 ```bash
 cd Project
