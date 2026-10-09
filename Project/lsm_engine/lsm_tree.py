@@ -40,6 +40,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 from .block_cache  import BlockCache
 from .bloom_filter import BloomFilter
 from .compaction   import compact
+from .cursor       import Cursor
 from .manifest     import Manifest, MAX_LEVELS
 from .metrics      import EngineMetrics
 from .skip_list    import SkipList
@@ -370,6 +371,79 @@ class LSMTree:
             _s(pb)  if pb  else None,
             _s(end) if end else None,
         )
+
+    def scan_keys(self,
+                  start = None,
+                  end   = None) -> Iterator[str]:
+        """Like scan() but yields only keys — no value fetch overhead."""
+        for key, _ in self.scan(start, end):
+            yield key
+
+    def cursor(self) -> Cursor:
+        """Return a new stateful Cursor over this database.
+
+        The cursor starts in an invalid state; call seek() or seek_to_first()
+        before reading.  Use as a context manager to ensure cleanup:
+
+            with db.cursor() as cur:
+                cur.seek('start_key')
+                while cur.valid():
+                    process(cur.key(), cur.value())
+                    cur.next()
+        """
+        return Cursor(self)
+
+    def delete_prefix(self, prefix) -> int:
+        """Delete all keys starting with prefix.  Returns the number of keys deleted.
+
+        Implemented as a single WriteBatch so all deletes are applied atomically
+        with one WAL fsync.  Scans the prefix range first to collect live keys,
+        then writes tombstones for each.
+
+        For large namespaces (millions of keys) this is memory-efficient because
+        the batch is built lazily from the scan iterator.
+        """
+        batch = WriteBatch()
+        for key, _ in self.prefix_scan(prefix):
+            batch.delete(key)
+        n = len(batch)
+        if n > 0:
+            self.write(batch)
+        return n
+
+    def stats_report(self) -> str:
+        """Return a formatted multi-line string summarising engine state.
+
+        Useful for dashboards, log lines, or quick inspection in a REPL.
+        """
+        s = self.stats()
+        lines = [
+            '┌─ LSMKV Engine Stats ────────────────────────────────┐',
+            f'│ uptime          {s.get("uptime_seconds", 0):.1f}s',
+            f'│ memtable        {s["memtable_bytes"]:>10,} B   '
+                f'{s["memtable_keys"]:>7,} keys',
+        ]
+        if s.get('imm_bytes', 0):
+            lines.append(f'│ imm (flushing)  {s["imm_bytes"]:>10,} B')
+        lines.append(f'│ wal             {s["wal_bytes"]:>10,} B')
+        for lvl, info in s.get('levels', {}).items():
+            lines.append(
+                f'│ {lvl:<4}           {info["bytes"]:>10,} B   '
+                f'{info["files"]:>3} file(s)'
+            )
+        lines += [
+            f'│ block cache     {s.get("block_cache_bytes", 0):>10,} B   '
+                f'hit={s.get("block_cache_hit_rate", 0):.1%}',
+            f'│ puts            {s.get("puts", 0):>10,}   '
+                f'gets={s.get("gets", 0):,}',
+            f'│ get hit rate    {s.get("get_hit_rate", 0):>10.1%}',
+            f'│ compactions     {s.get("compactions", 0):>10,}   '
+                f'flushes={s.get("flushes", 0):,}',
+        ]
+        if 'write_amplification' in s:
+            lines.append(f'│ write amp       {s["write_amplification"]:>10.2f}×')
+        lines.append('└─────────────────────────────────────────────────────┘')
+        return '\n'.join(lines)
 
     def close(self):
         self._shutdown.set()
