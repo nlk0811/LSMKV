@@ -505,6 +505,47 @@ class LSMTree:
 
         return self.update(key, _append)
 
+    def pop(self, key, default=None):
+        """Atomically get and delete a key.  Returns the current value or default.
+
+        Equivalent to `value = db.get(key); db.delete(key); return value`,
+        but atomic — no other writer can interleave.
+
+        Example — dequeue from a persistent queue:
+            item = db.pop('queue:001')
+        """
+        self._check_writable()
+        result = [default]
+
+        def _pop(v):
+            result[0] = v if v is not None else default
+            return None   # delete the key
+
+        self.update(key, _pop)
+        return result[0]
+
+    def setdefault(self, key, default_value) -> str:
+        """Return the value for key, inserting default_value if key is absent.
+
+        Atomic: if two threads call setdefault() concurrently on the same
+        missing key, exactly one sets the value; both return the same result.
+
+        Example:
+            db.setdefault('config:theme', 'dark')  # sets if absent
+            db.setdefault('config:theme', 'light') # returns 'dark' (already set)
+        """
+        self._check_writable()
+        result = [default_value]
+
+        def _setdefault(v):
+            if v is not None:
+                result[0] = v
+                return v   # keep existing value
+            return default_value   # set default
+
+        self.update(key, _setdefault)
+        return result[0]
+
     def increment(self, key, amount: int = 1) -> int:
         self._check_writable()
         """Atomically add amount to an integer value.  Returns the new value.
@@ -1385,6 +1426,10 @@ class LSMTree:
         ) if new_files else 0
         self.metrics.inc(compactions=1, bytes_compacted=bytes_in)
         self.metrics.inc_level(dst_level, bytes_in)
+        # Invalidate key index for src_level (it lost picked_src files).
+        # The index for dst_level is rebuilt by _sort_level_after_compaction().
+        if src_level in self._level_key_index:
+            del self._level_key_index[src_level]
         if self._on_compaction:
             try:
                 self._on_compaction(src_level, dst_level, bytes_in, bytes_out)
