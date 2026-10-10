@@ -791,6 +791,41 @@ class LSMTree:
         results = list(self.scan(start, end))
         yield from reversed(results)
 
+    def key_stats(self, sample_size: int = 1000) -> dict:
+        """Sample up to sample_size live entries and return size statistics.
+
+        Useful for capacity planning and understanding storage layout.
+        Returns key/value size distribution plus estimated total entries.
+
+        Example:
+            stats = db.key_stats(10_000)
+            print(f'avg value size: {stats["val_size"]["avg"]:.0f} bytes')
+        """
+        key_sizes, val_sizes = [], []
+        for key, val in self.scan():
+            key_sizes.append(len(key.encode() if isinstance(key, str) else key))
+            val_sizes.append(len(val.encode() if isinstance(val, str) else val)
+                             if val is not None else 0)
+            if len(key_sizes) >= sample_size:
+                break
+        n = len(key_sizes)
+        if n == 0:
+            return {'sampled': 0, 'key_size': {}, 'val_size': {}}
+
+        def _stat(values):
+            return {
+                'min': min(values),
+                'max': max(values),
+                'avg': round(sum(values) / len(values), 1),
+                'total': sum(values),
+            }
+
+        return {
+            'sampled':   n,
+            'key_size':  _stat(key_sizes),
+            'val_size':  _stat(val_sizes),
+        }
+
     def export(self, path: str, format: str = 'jsonl',
                start=None, end=None) -> int:
         """Export all live keys to a file.  Returns the number of entries written.
