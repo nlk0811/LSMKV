@@ -43,6 +43,7 @@ from .compaction   import compact
 from .cursor       import Cursor
 from .manifest     import Manifest, MAX_LEVELS
 from .pipeline     import Pipeline
+from .transaction  import Transaction
 from .snapshot     import Snapshot
 from .metrics      import EngineMetrics
 from .skip_list    import SkipList
@@ -497,6 +498,43 @@ class LSMTree:
         if _done:
             _done.wait()
         return True
+
+    def transaction(self) -> Transaction:
+        """Return an optimistic read-write Transaction.
+
+        Records which keys are read; on commit() verifies they haven't
+        changed since the read and atomically applies all writes.
+        Returns False on conflict — caller should retry.
+
+        Example — transfer with retry:
+            for _ in range(10):
+                with db.transaction() as txn:
+                    a = int(txn.get('acct:1') or 0)
+                    b = int(txn.get('acct:2') or 0)
+                    txn.put('acct:1', str(a - 100))
+                    txn.put('acct:2', str(b + 100))
+                if txn.committed:
+                    break   # success
+        """
+        return Transaction(self)
+
+    def atomic_max(self, key, value: int) -> int:
+        """Atomically set key = max(current_value, value).  Returns new value.
+
+        Initialises to value if key is absent.
+        Useful for tracking high-water marks (peak users, max price, etc.).
+        """
+        result = self.update(key, lambda v: str(max(value, int(v or value))))
+        return int(result)
+
+    def atomic_min(self, key, value: int) -> int:
+        """Atomically set key = min(current_value, value).  Returns new value.
+
+        Initialises to value if key is absent.
+        Useful for tracking low-water marks (min latency, floor price, etc.).
+        """
+        result = self.update(key, lambda v: str(min(value, int(v or value))))
+        return int(result)
 
     def pipeline(self) -> Pipeline:
         """Return a Pipeline that buffers put/delete ops and applies them in
