@@ -5,6 +5,46 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 30 — key_stats() + metrics.reset()
+**Added:**
+- `db.key_stats(sample_size=1000)` — sample key/value size distribution:
+  min/max/avg/total for both key and value sizes.  Useful for capacity planning.
+- `db.metrics.reset()` — atomically reset all counters and restart the uptime
+  clock.  Enables measuring rates over fixed windows (ops/min, cache hit rate
+  during a load test, etc.).
+
+## Iteration 29 — db.export(), db.import_(), db.clear()
+**Added:**
+- `db.export(path, format='jsonl', start, end)` — write live entries as JSONL
+  (`{"k":"key","v":"value"}`).  Works on read-only databases.
+- `db.import_(path, format='jsonl', batch_size=1000, ttl_seconds=0)` — bulk
+  insert from an exported JSONL file.
+- `db.clear(prefix='')` — delete all keys, or all keys with a given prefix.
+  Equivalent to `delete_prefix(prefix)` when prefix is provided.
+
+## Iteration 28 — filter_scan(), reverse_scan(), memory_usage()
+**Added:**
+- `db.filter_scan(fn, start, end)` — yield only entries where `fn(key, value)`
+  is True.  Zero memory overhead (streaming predicate).
+- `db.reverse_scan(start, end)` — yield entries in reverse sorted order.
+  O(n) memory buffer; use `Cursor.seek_to_last()` for single-entry lookups.
+- `db.memory_usage()` — breakdown of in-memory bytes: memtable, block cache,
+  reader index + Bloom filters, level key index.
+
+## Iteration 27 — pop(), setdefault(), key index invalidation fix
+**Fixed:** `_level_key_index[src_level]` was not invalidated when a compaction
+removed files from src_level.  Now explicitly deleted; rebuilt lazily on next
+access.
+**Added:**
+- `db.pop(key, default=None)` — atomic get-and-delete.
+- `db.setdefault(key, default_value)` — set only if absent; return current value.
+
+## Iteration 26 — Snapshot.scan() template optimisation + README
+**Fixed:** `Snapshot.scan()` was opening fresh `SSTableReader` instances without
+borrowing metadata from the cached reader (same issue as LSMTree.scan() before
+iteration 16).  Now uses `SSTableReader(_template=cached_reader)`.
+**README** updated to 328 tests and current benchmark numbers (p50 = 0.010 ms).
+
 ## Iteration 25 — Level Key Index Cache: O(log n) lock-free binary search
 **Problem:** `_binary_search_level()` called `_get_reader()` (with `_cache_lock`) for
 every comparison step — O(log n) lock acquisitions per get() on sorted L1+ levels.
