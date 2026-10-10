@@ -1101,6 +1101,56 @@ class LSMTree:
             'elapsed_seconds':   round(time.monotonic() - t0, 2),
         }
 
+    def keys(self, start=None, end=None) -> Iterator[str]:
+        """Yield all live keys — alias for scan_keys().
+
+        Provides a dict-compatible interface:
+            list(db.keys())          # all keys
+            list(db.keys('u:', 'v')) # keys in range
+        """
+        return self.scan_keys(start, end)
+
+    def values(self, start=None, end=None) -> Iterator[str]:
+        """Yield all live values in key-sorted order.
+
+        Example:
+            for value in db.values('user:', 'user;'):
+                process(value)
+        """
+        for _, val in self.scan(start, end):
+            yield val
+
+    def items(self, start=None, end=None) -> Iterator:
+        """Yield (key, value) pairs — alias for scan().
+
+        Provides a dict-compatible interface:
+            for key, val in db.items('order:', 'order;'):
+                ...
+        """
+        return self.scan(start, end)
+
+    def get_or_set(self, key, default_fn, ttl_seconds: float = 0):
+        """Return value for key; if absent, compute and set it via default_fn().
+
+        Useful for cache-aside patterns:
+            user = db.get_or_set(
+                f'user:{user_id}',
+                lambda: fetch_from_db(user_id),
+                ttl_seconds=300,
+            )
+
+        Note: not strictly atomic — concurrent calls may both compute default_fn().
+        For true atomicity at the cost of holding the write lock during computation,
+        use update() directly.
+        """
+        val = self.get(key)
+        if val is not None:
+            return val
+        new_val = default_fn()
+        if new_val is not None:
+            self.put(key, new_val, ttl_seconds=ttl_seconds)
+        return new_val
+
     def filter_scan(self, filter_fn, start=None, end=None
                     ) -> Iterator[Tuple[str, str]]:
         """Scan and yield only (key, value) pairs that satisfy filter_fn.
