@@ -5,6 +5,38 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 35 — mset() + mget() + rename()
+**Added:**
+- `db.mset(mapping, ttl_seconds=0)` — bulk set via one WriteBatch, one WAL fsync.
+- `db.mget(keys)` — alias for get_many(); Redis-compatible naming.
+- `db.rename(old_key, new_key)` — copy value to new key + delete old key atomically.
+
+## Iteration 34 — range_delete(), ceiling_key(), floor_key()
+**Added:**
+- `db.range_delete(start, end)` — delete all keys in [start, end) atomically.
+- `db.ceiling_key(key)` — smallest key >= target; O(log n) via seek.
+- `db.floor_key(key)` — largest key <= target; O(n/block) with early exit.
+
+## Iteration 33 — ttl_remaining() + size_on_disk()
+**Added:**
+- `db.ttl_remaining(key)` — seconds until key expires.  Returns negative for
+  expired-but-not-purged keys.  Full SSTable traversal path (binary search + range filter).
+- `db.size_on_disk()` — total bytes in committed SSTable files (zero disk I/O;
+  reads from MANIFEST file-size cache).
+
+## Iteration 32 — db.has() + db.touch() + compaction cascade wakeup
+**Added:**
+- `db.has(key)` — expressive existence check (same cost as get()).
+- `db.touch(key, ttl_seconds)` — extend TTL without changing value.  Returns True
+  if key existed, False if absent (never creates a new key).
+**Fixed:** After each compaction, `_imm_pending.set()` triggers an immediate check
+for further compaction (L0→L1 cascade now starts without waiting up to 2 seconds).
+
+## Iteration 31 — event-based write stall + db.count()
+**Fixed:** `_maybe_stall_writes()` replaced 5ms busy-poll loop with
+`threading.Event.wait(timeout=0.1)`.  CPU during write stalls drops ~100×.
+**Added:** `db.count(start, end)` — exact key count via scan_keys().
+
 ## Iteration 30 — key_stats() + metrics.reset()
 **Added:**
 - `db.key_stats(sample_size=1000)` — sample key/value size distribution:
