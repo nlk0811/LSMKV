@@ -497,6 +497,98 @@ class LSMTree:
             _done.wait()
         return True
 
+    def ttl_remaining(self, key) -> Optional[float]:
+        """Return seconds until key expires, or None if no TTL set or key absent.
+
+        Returns a negative number if the key exists with an expired TTL that
+        has not yet been purged by compaction.
+
+        Example:
+            remaining = db.ttl_remaining('session:abc')
+            if remaining is not None and remaining < 300:
+                db.touch('session:abc', ttl_seconds=3600)  # renew
+        """
+        kb = _b(key)
+
+        def _extract(val, deleted) -> Optional[float]:
+            if deleted:
+                return 'TOMB'   # sentinel
+            _, exp = _ttl_decode(val)
+            return None if exp is None else exp - time.time()
+
+        # 1. Active memtable
+        r = self._memtable.get(kb)
+        if r is not None:
+            result = _extract(*r)
+            return None if result == 'TOMB' else result
+
+        # 2. Immutable memtable
+        imm = self._imm
+        if imm is not None:
+            r = imm.get(kb)
+            if r is not None:
+                result = _extract(*r)
+                return None if result == 'TOMB' else result
+
+        # 3. SSTables — same traversal as _get() but returns TTL info
+        with self._lock:
+            levels = [list(lvl) for lvl in self._manifest.levels]
+
+        for lvl_idx, lvl in enumerate(levels):
+            if lvl_idx > 0 and lvl_idx in self._sorted_levels and lvl:
+                path = self._binary_search_level(lvl_idx, lvl, kb)
+                if path is None:
+                    continue
+                rdr = self._get_reader(path)
+                if rdr is None:
+                    continue
+                try:
+                    hit = rdr.get(kb)
+                    if hit is not None:
+                        val, tombstone = hit
+                        if tombstone:
+                            return None
+                        _, exp = _ttl_decode(val)
+                        return None if exp is None else exp - time.time()
+                except Exception:
+                    continue
+            else:
+                order = reversed(lvl) if lvl_idx == 0 else iter(lvl)
+                for path in order:
+                    rdr = self._get_reader(path)
+                    if rdr is None:
+                        continue
+                    fk, lk = rdr.first_key, rdr.last_key
+                    if fk and lk and (kb < fk or kb > lk):
+                        continue
+                    try:
+                        hit = rdr.get(kb)
+                        if hit is not None:
+                            val, tombstone = hit
+                            if tombstone:
+                                return None
+                            _, exp = _ttl_decode(val)
+                            return None if exp is None else exp - time.time()
+                    except Exception:
+                        continue
+        return None
+
+    def size_on_disk(self) -> int:
+        """Return the total bytes used by all SSTable files on disk.
+
+        This is the committed (flushed) data only — the active memtable and
+        WAL are not included.  Use stats()['wal_bytes'] for WAL size.
+
+        Example:
+            print(f'Database is {db.size_on_disk() / 1024 / 1024:.1f} MB')
+        """
+        with self._lock:
+            return sum(
+                self._manifest._file_sizes.get(f, 0)
+                for lvl in self._manifest.levels
+                for f in lvl
+            )
+
     def has(self, key) -> bool:
         """Return True if key exists and has not expired.
 
