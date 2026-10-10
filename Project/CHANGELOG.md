@@ -5,6 +5,36 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 39 — keys()/values()/items() + get_or_set()
+**Added:**
+- `db.keys(start, end)` — alias for scan_keys(); dict-compatible naming.
+- `db.values(start, end)` — yield values only, no keys.
+- `db.items(start, end)` — alias for scan(); dict-compatible naming.
+- `db.get_or_set(key, fn, ttl_seconds)` — return current value or compute+set.
+  Useful for cache-aside patterns.  Not strictly atomic (fn may be called
+  multiple times under concurrency); use update() for strict atomicity.
+
+## Iteration 38 — Transaction (OCC) + atomic_max() + atomic_min()
+**Added:**
+- `db.transaction()` → `Transaction` with optimistic concurrency control.
+  Records observed reads; commit() validates they're unchanged then writes.
+  Returns False on conflict — caller should retry.  Auto-commits on
+  `with` exit; auto-rolls-back on exception.
+- `db.atomic_max(key, value)` — atomically set key = max(current, value).
+- `db.atomic_min(key, value)` — atomically set key = min(current, value).
+
+## Iteration 37 — Pipeline — buffered write context manager
+**Added:** `db.pipeline()` → `Pipeline` buffers put/delete calls and
+executes as one WriteBatch (one WAL fsync) on execute() or `__exit__`.
+Discards on exception.  Chainable: `db.pipeline().put(k1,v1).put(k2,v2).execute()`.
+
+## Iteration 36 — TTL management: expire() + expireat() + persist()
+**Added:**
+- `db.expire(key, ttl_seconds)` — alias for touch(); Redis-compatible.
+- `db.expireat(key, timestamp)` — set absolute Unix timestamp expiry.
+- `db.persist(key)` — remove TTL from key (make permanent).
+  Completes the Redis-compatible TTL API alongside put/touch/ttl_remaining.
+
 ## Iteration 35 — mset() + mget() + rename()
 **Added:**
 - `db.mset(mapping, ttl_seconds=0)` — bulk set via one WriteBatch, one WAL fsync.
