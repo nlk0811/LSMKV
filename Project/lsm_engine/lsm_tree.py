@@ -497,6 +497,54 @@ class LSMTree:
             _done.wait()
         return True
 
+    def range_delete(self, start=None, end=None) -> int:
+        """Delete all keys in [start, end) atomically.  Returns count deleted.
+
+        More expressive than delete_prefix() for non-prefix range boundaries.
+        Equivalent to collecting the range via scan() then writing one batch.
+
+        Example — purge stale log entries:
+            deleted = db.range_delete('log:2024-', 'log:2025-')
+        """
+        self._check_writable()
+        batch = WriteBatch()
+        for key, _ in self.scan(start, end):
+            batch.delete(key)
+        n = len(batch)
+        if n > 0:
+            self.write(batch)
+        return n
+
+    def ceiling_key(self, key) -> Optional[str]:
+        """Return the smallest key >= key, or None if no such key exists.
+
+        O(log n) — uses the existing scan() start-seek optimisation.
+
+        Example:
+            # Find the next user key at or after 'user:1000'
+            next_user = db.ceiling_key('user:1000')
+        """
+        return next(self.scan_keys(start=key), None)
+
+    def floor_key(self, key) -> Optional[str]:
+        """Return the largest key <= key, or None if no smaller key exists.
+
+        O(n/block_size) in the worst case — scans the range up to key.
+        Efficient in practice because binary search skips most SSTable files.
+
+        Example:
+            # Largest order at or before order '500'
+            prev_order = db.floor_key('order:500')
+        """
+        # Check if key itself exists (O(log n))
+        if self.has(key):
+            return key
+        # Find the largest key strictly less than key
+        result = None
+        for k in self.scan_keys(end=key):
+            result = k
+        return result
+
     def ttl_remaining(self, key) -> Optional[float]:
         """Return seconds until key expires, or None if no TTL set or key absent.
 
