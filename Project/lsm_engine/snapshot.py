@@ -35,6 +35,7 @@ import heapq
 from dataclasses import dataclass, field
 from typing import Any, Iterator, List, Optional, Tuple
 
+from .sstable import SSTableReader
 from .ttl import decode as _ttl_decode, is_expired as _ttl_expired
 
 
@@ -100,44 +101,58 @@ class Snapshot:
         eb = _b(end)   if end   else None
 
         sources: List[Any] = []
+        scan_readers: List[SSTableReader] = []   # own these fds; close in finally
 
         for lvl_idx, lvl in enumerate(self._levels):
             order = list(reversed(lvl)) if lvl_idx == 0 else lvl
             for path in order:
-                rdr = self._db._get_reader(path)
-                if rdr is None:
+                cached = self._db._get_reader(path)
+                if cached is None:
                     continue
-                fk, lk = rdr.first_key, rdr.last_key
+                fk, lk = cached.first_key, cached.last_key
                 if fk and lk:
                     if (eb and fk >= eb) or (sb and lk < sb):
                         continue
-                sources.append(rdr.scan(sb, eb))
+                # Template optimisation: borrow index + Bloom from cached reader.
+                # Only opens a new fd (no 3-seek metadata reload).
+                scan_rdr = SSTableReader(path,
+                                         block_cache=self._db._block_cache,
+                                         _template=cached)
+                scan_readers.append(scan_rdr)
+                sources.append(scan_rdr.scan(sb, eb))
 
-        heap: list = []
-        for pri, it in enumerate(sources):
-            try:
-                k, v, d = next(it)
-                heapq.heappush(heap, _E(k, pri, v or b'', d, it))
-            except StopIteration:
-                pass
+        try:
+            heap: list = []
+            for pri, it in enumerate(sources):
+                try:
+                    k, v, d = next(it)
+                    heapq.heappush(heap, _E(k, pri, v or b'', d, it))
+                except StopIteration:
+                    pass
 
-        last: Optional[bytes] = None
-        while heap:
-            e = heapq.heappop(heap)
-            try:
-                k, v, d = next(e.it)
-                heapq.heappush(heap, _E(k, e.pri, v or b'', d, e.it))
-            except StopIteration:
-                pass
-            if e.key == last:
-                continue
-            last = e.key
-            if e.tomb:
-                continue
-            val, exp = _ttl_decode(e.val)
-            if _ttl_expired(exp):
-                continue
-            yield _s(e.key), _s(val)
+            last: Optional[bytes] = None
+            while heap:
+                e = heapq.heappop(heap)
+                try:
+                    k, v, d = next(e.it)
+                    heapq.heappush(heap, _E(k, e.pri, v or b'', d, e.it))
+                except StopIteration:
+                    pass
+                if e.key == last:
+                    continue
+                last = e.key
+                if e.tomb:
+                    continue
+                val, exp = _ttl_decode(e.val)
+                if _ttl_expired(exp):
+                    continue
+                yield _s(e.key), _s(val)
+        finally:
+            for rdr in scan_readers:
+                try:
+                    rdr.close()
+                except Exception:
+                    pass
 
     def prefix_scan(self, prefix) -> Iterator[Tuple[str, str]]:
         """Yield all snapshot entries whose key starts with prefix."""
