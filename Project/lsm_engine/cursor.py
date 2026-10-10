@@ -69,6 +69,25 @@ class Cursor:
         """Position the cursor at the first key that starts with prefix."""
         return self.seek(prefix)
 
+    def seek_to_last(self) -> 'Cursor':
+        """Position the cursor at the very last key in the database.
+
+        Requires a full O(n) scan to find the last entry.  After this call
+        valid() is True (unless the database is empty) and next() will make
+        the cursor invalid.
+
+        Example — peek at the largest key:
+            cur = db.cursor().seek_to_last()
+            if cur.valid():
+                print(cur.key(), cur.value())
+        """
+        last_kv = None
+        for kv in self._db.scan():
+            last_kv = kv
+        self._current = last_kv
+        self._gen     = None   # no entries after the last
+        return self
+
     # ── inspection ─────────────────────────────────────────────────────────────
 
     def valid(self) -> bool:
