@@ -112,7 +112,9 @@ class LSMTree:
                  memtable_size_bytes: int = 4 * 1024 * 1024,
                  prefix_compression: bool = True,
                  l0_compact_size_bytes: int = 0,
-                 read_only: bool = False):
+                 read_only: bool = False,
+                 on_flush=None,
+                 on_compaction=None):
         """
         sync_writes=True  (default) — group-commit WAL fsync.
         sync_writes=False — no fsync; OS decides when to flush (benchmarks only).
@@ -128,11 +130,13 @@ class LSMTree:
             key storage reduction for clustered keys.  Default True.
         l0_compact_size_bytes: also trigger L0 compaction when total L0 size
             exceeds this threshold (0 = count-only trigger, default).
-        read_only: open the database in read-only mode.
-            No WAL, no background compaction, no writes.  Reads from SSTables
-            and the MANIFEST only.  Useful for analytics, backup verification,
-            or running multiple reader processes on the same database directory.
-            Any call to put/delete/write/update/flush/compact raises ReadOnlyError.
+        read_only: open in read-only mode (no WAL, no writes, no compaction).
+        on_flush: optional callable(bytes_written: int, level: int) called after
+            each memtable flush completes.  level is always 0 (L0 SSTable).
+            Called from the background thread — must be thread-safe.
+        on_compaction: optional callable(src_level: int, dst_level: int,
+            bytes_in: int, bytes_out: int) called after each compaction completes.
+            Called from a compaction worker thread — must be thread-safe.
         """
         self.dir = directory
         os.makedirs(directory, exist_ok=True)
@@ -177,6 +181,9 @@ class LSMTree:
         self._l0_compact_size     = l0_compact_size_bytes
         # Read-only flag: disables all write paths.
         self._read_only           = read_only
+        # Event hooks (called from background threads — must be thread-safe).
+        self._on_flush       = on_flush
+        self._on_compaction  = on_compaction
 
         # Levels known to be sorted by first_key (enables binary search in get()).
         self._sorted_levels: set = set(self._manifest._sorted_levels)
@@ -475,6 +482,24 @@ class LSMTree:
         if _done:
             _done.wait()
         return True
+
+    def atomic_append(self, key, item, separator: str = ',') -> str:
+        """Atomically append item to a string list stored at key.
+
+        If the key doesn't exist, sets it to item.  Otherwise appends
+        separator + item.  Returns the new value.
+
+        Example:
+            db.atomic_append('tags:post1', 'python')
+            db.atomic_append('tags:post1', 'storage')
+            db.get('tags:post1')   # 'python,storage'
+        """
+        sep = separator
+
+        def _append(v):
+            return item if v is None else f'{v}{sep}{item}'
+
+        return self.update(key, _append)
 
     def increment(self, key, amount: int = 1) -> int:
         self._check_writable()
@@ -875,6 +900,8 @@ class LSMTree:
                                             if self._compaction_executor else 0),
             'compaction_rate_bytes_per_sec':self._compaction_limiter._rate,
             'l0_compact_size_bytes':        self._l0_compact_size,
+            'on_flush':                     self._on_flush is not None,
+            'on_compaction':                self._on_compaction is not None,
             'sorted_levels':                sorted(self._sorted_levels),
             'max_levels':                   MAX_LEVELS,
             'l0_compact_trigger':           L0_COMPACT_TRIGGER,
@@ -1026,6 +1053,11 @@ class LSMTree:
                 self._manifest.add_l0(sst_path)
             self._imm = None   # data is in SSTable; safe to clear
             self.metrics.inc(flushes=1, bytes_flushed=sz)
+            if self._on_flush:
+                try:
+                    self._on_flush(sz, 0)
+                except Exception:
+                    pass
 
     # ── flush (active memtable → SSTable + WAL truncation) ────────────────────
 
@@ -1063,6 +1095,11 @@ class LSMTree:
 
         self._wal.truncate()                         # now safe
         self.metrics.inc(flushes=1, bytes_flushed=sz)
+        if self._on_flush:
+            try:
+                self._on_flush(sz, 0)
+            except Exception:
+                pass
 
     # ── compaction ─────────────────────────────────────────────────────────────
 
@@ -1294,8 +1331,16 @@ class LSMTree:
                 os.remove(f)
             except OSError:
                 pass
+        bytes_out = sum(
+            self._manifest._file_sizes.get(f, 0) for f in new_files
+        ) if new_files else 0
         self.metrics.inc(compactions=1, bytes_compacted=bytes_in)
-        self.metrics.inc_level(dst_level, bytes_in)   # per-level write-amp tracking
+        self.metrics.inc_level(dst_level, bytes_in)
+        if self._on_compaction:
+            try:
+                self._on_compaction(src_level, dst_level, bytes_in, bytes_out)
+            except Exception:
+                pass
         # Sort dst_level by first_key so future get()s can binary-search it.
         if dst_level > 0:
             self._sort_level_after_compaction(dst_level)
