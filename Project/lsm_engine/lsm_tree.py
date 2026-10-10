@@ -187,6 +187,10 @@ class LSMTree:
 
         # Levels known to be sorted by first_key (enables binary search in get()).
         self._sorted_levels: set = set(self._manifest._sorted_levels)
+        # Pre-built sorted (first_key, path) list per level.
+        # Binary search uses this directly — zero _get_reader() calls during
+        # comparison, avoiding _cache_lock contention on every search step.
+        self._level_key_index: Dict[int, List[Tuple[bytes, str]]] = {}
 
         # Parallel compaction: skipped in read-only mode.
         if not read_only:
@@ -355,7 +359,7 @@ class LSMTree:
         for lvl_idx, lvl in enumerate(levels):
             if lvl_idx > 0 and lvl_idx in self._sorted_levels and lvl:
                 # Binary search: O(log n) comparisons for sorted L1+ levels.
-                path = self._binary_search_level(lvl, kb)
+                path = self._binary_search_level(lvl_idx, lvl, kb)
                 if path is None:
                     continue
                 rdr = self._get_reader(path)
@@ -1145,40 +1149,62 @@ class LSMTree:
             future = self._compaction_executor.submit(self._compact_into, src_level)
             self._compaction_futures[src_level] = future
 
-    def _binary_search_level(self, files: list, key: bytes) -> Optional[str]:
-        """Binary search in a level whose files are sorted by first_key.
+    def _binary_search_level(self, lvl_idx: int, files: list, key: bytes
+                              ) -> Optional[str]:
+        """Binary search in a sorted level.
 
-        Returns the single file that could contain key, or None.
-        Uses first_key and last_key from the reader cache — no disk I/O.
+        Uses the cached key index (pre-built sorted list of first_keys) when
+        available — zero _get_reader() calls during comparisons, eliminating
+        _cache_lock contention for every comparison step.
+
+        Falls back to per-comparison _get_reader() if no index exists.
         """
-        lo, hi, result = 0, len(files) - 1, -1
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            rdr = self._get_reader(files[mid])
-            if rdr is None:
+        key_index = self._get_level_key_index(lvl_idx, files)
+
+        if key_index is not None:
+            # Fast path: pure array binary search, no locks during comparisons.
+            lo, hi, result = 0, len(key_index) - 1, -1
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                if key_index[mid][0] <= key:
+                    result = mid
+                    lo = mid + 1
+                else:
+                    hi = mid - 1
+            if result == -1:
                 return None
-            fk = rdr.first_key
-            if fk is None:
+            path = key_index[result][1]
+        else:
+            # Slow fallback: call _get_reader() at each comparison.
+            lo, hi, result = 0, len(files) - 1, -1
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                rdr = self._get_reader(files[mid])
+                if rdr is None:
+                    return None
+                fk = rdr.first_key
+                if fk is None:
+                    return None
+                if fk <= key:
+                    result = mid
+                    lo = mid + 1
+                else:
+                    hi = mid - 1
+            if result == -1:
                 return None
-            if fk <= key:
-                result = mid
-                lo = mid + 1
-            else:
-                hi = mid - 1
-        if result == -1:
-            return None
-        rdr = self._get_reader(files[result])
+            path = files[result]
+
+        # One _get_reader() call to verify key <= last_key.
+        rdr = self._get_reader(path)
         if rdr is None:
             return None
         lk = rdr.last_key
         if lk is not None and key > lk:
-            return None   # key beyond this file's range
-        return files[result]
+            return None
+        return path
 
     def _sort_level_after_compaction(self, dst_level: int):
-        """Sort dst_level files by first_key and mark the level as sorted.
-        Called immediately after a compaction commits to MANIFEST.
-        """
+        """Sort dst_level files by first_key, mark it sorted, and cache the key index."""
         with self._lock:
             files = list(self._manifest.levels[dst_level])
         first_keys = {}
@@ -1189,7 +1215,30 @@ class LSMTree:
         if len(first_keys) == len(files) and files:
             with self._lock:
                 self._manifest.sort_level(dst_level, first_keys)
+            # Cache sorted (first_key, path) pairs — used by binary search
+            # in _get() to avoid _get_reader() calls during comparisons.
+            self._level_key_index[dst_level] = sorted(
+                (fk, p) for p, fk in first_keys.items()
+            )
             self._sorted_levels.add(dst_level)
+
+    def _get_level_key_index(self, lvl_idx: int, files: list
+                              ) -> Optional[List[Tuple[bytes, str]]]:
+        """Return the cached key index for lvl_idx, building it lazily if needed."""
+        idx = self._level_key_index.get(lvl_idx)
+        if idx is not None:
+            return idx
+        # Build lazily — used when sorted_levels was loaded from MANIFEST but
+        # _level_key_index wasn't yet populated (e.g. after a restart).
+        pairs = []
+        for path in files:
+            rdr = self._get_reader(path)
+            if rdr and rdr.first_key:
+                pairs.append((rdr.first_key, path))
+            else:
+                return None   # can't build complete index
+        self._level_key_index[lvl_idx] = pairs
+        return pairs
 
     def _overlapping_files(self,
                            candidates: List[str],
