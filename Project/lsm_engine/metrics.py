@@ -97,6 +97,8 @@ class EngineMetrics:
         self.bytes_flushed    = 0
         self.compactions      = 0
         self.bytes_compacted  = 0
+        # per-level compaction: {level: bytes_compacted_at_that_level}
+        self.bytes_by_level: dict = {}
         # user-visible bytes written (key+value, excludes WAL/SSTable overhead)
         self.bytes_written_user = 0
         # scans
@@ -113,6 +115,11 @@ class EngineMetrics:
         with self._lock:
             for k, v in kwargs.items():
                 setattr(self, k, getattr(self, k) + v)
+
+    def inc_level(self, level: int, bytes_compacted: int):
+        """Track bytes compacted at a specific level for per-level write-amp stats."""
+        with self._lock:
+            self.bytes_by_level[level] = self.bytes_by_level.get(level, 0) + bytes_compacted
 
     def snapshot(self) -> dict:
         """Return a point-in-time snapshot with derived rates and ratios."""
@@ -153,6 +160,8 @@ class EngineMetrics:
             if self.bytes_written_user > 0:
                 d['write_amplification'] = round(
                     disk_written / self.bytes_written_user, 2)
+            if self.bytes_by_level:
+                d['bytes_compacted_by_level'] = dict(self.bytes_by_level)
         d.update(self.get_latency.snapshot('get'))
         d.update(self.put_latency.snapshot('put'))
         return d
