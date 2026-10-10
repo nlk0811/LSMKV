@@ -42,6 +42,7 @@ from .bloom_filter import BloomFilter
 from .compaction   import compact
 from .cursor       import Cursor
 from .manifest     import Manifest, MAX_LEVELS
+from .pipeline     import Pipeline
 from .snapshot     import Snapshot
 from .metrics      import EngineMetrics
 from .skip_list    import SkipList
@@ -496,6 +497,25 @@ class LSMTree:
         if _done:
             _done.wait()
         return True
+
+    def pipeline(self) -> Pipeline:
+        """Return a Pipeline that buffers put/delete ops and applies them in
+        one atomic WriteBatch (one WAL fsync) on execute() or context exit.
+
+        Example:
+            with db.pipeline() as pipe:
+                for key, val in big_dict.items():
+                    pipe.put(key, val)
+            # → one WAL fsync for the entire batch
+
+            # Or chained:
+            (db.pipeline()
+               .put('k1', 'v1')
+               .put_ttl('sess', tok, ttl_seconds=3600)
+               .delete('old')
+               .execute())
+        """
+        return Pipeline(self)
 
     def mset(self, mapping: dict, ttl_seconds: float = 0) -> None:
         """Set multiple keys at once using one atomic WAL fsync.
