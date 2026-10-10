@@ -116,6 +116,30 @@ class EngineMetrics:
             for k, v in kwargs.items():
                 setattr(self, k, getattr(self, k) + v)
 
+    def reset(self):
+        """Reset all counters to zero and restart the uptime clock.
+
+        Useful for measuring rates over a specific window:
+            db.metrics.reset()
+            time.sleep(60)
+            snap = db.metrics.snapshot()
+            print(f'{snap[\"puts\"]} puts in the last minute')
+        """
+        with self._lock:
+            self._start = time.monotonic()
+            for attr in ('puts', 'deletes', 'batches', 'batch_ops',
+                         'gets', 'get_hits', 'get_misses',
+                         'cache_hits', 'cache_misses',
+                         'bloom_skips', 'range_skips', 'sstable_reads',
+                         'flushes', 'bytes_flushed',
+                         'compactions', 'bytes_compacted', 'bytes_written_user',
+                         'scans', 'scan_entries',
+                         'wal_records', 'wal_syncs', 'wal_gc_batches', 'wal_gc_records'):
+                setattr(self, attr, 0)
+            self.bytes_by_level.clear()
+        self.get_latency  = LatencyTracker()
+        self.put_latency  = LatencyTracker()
+
     def inc_level(self, level: int, bytes_compacted: int):
         """Track bytes compacted at a specific level for per-level write-amp stats."""
         with self._lock:
