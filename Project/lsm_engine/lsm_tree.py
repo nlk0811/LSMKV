@@ -597,6 +597,57 @@ class LSMTree:
             result = k
         return result
 
+    def expire(self, key, ttl_seconds: float) -> bool:
+        """Set or extend the TTL on an existing key.  Alias for touch().
+
+        Returns True if key existed (TTL updated), False if absent.
+        Redis-compatible naming: `EXPIRE key seconds`.
+
+        Example:
+            db.expire('session:abc', 3600)   # expire in 1 hour
+        """
+        return self.touch(key, ttl_seconds)
+
+    def expireat(self, key, timestamp: float) -> bool:
+        """Set key to expire at an absolute Unix timestamp.
+
+        Returns True if key existed, False if absent.
+        Useful when the exact expiry instant is known in advance.
+
+        Example:
+            import time
+            end_of_day = time.time() + (86400 - time.time() % 86400)
+            db.expireat('daily_cache', end_of_day)
+        """
+        ttl = timestamp - time.time()
+        return self.touch(key, ttl_seconds=max(0.001, ttl))
+
+    def persist(self, key) -> bool:
+        """Remove the TTL from key, making it permanent.
+
+        Returns True if key existed with a TTL.
+        Returns False if key is absent, already permanent (no TTL), or expired.
+        Redis-compatible naming: `PERSIST key`.
+
+        Example:
+            db.put('k', 'v', ttl_seconds=60)
+            db.persist('k')    # now permanent
+            db.ttl_remaining('k')  # → None
+        """
+        self._check_writable()
+        if self.ttl_remaining(key) is None:
+            return False   # absent or no TTL
+        persisted = [False]
+
+        def _do_persist(v):
+            if v is not None:
+                persisted[0] = True
+                return v   # write back same value, ttl_seconds=0 removes TTL
+            return None
+
+        self.update(key, _do_persist, ttl_seconds=0)
+        return persisted[0]
+
     def ttl_remaining(self, key) -> Optional[float]:
         """Return seconds until key expires, or None if no TTL set or key absent.
 
