@@ -5,6 +5,63 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 25 — Level Key Index Cache: O(log n) lock-free binary search
+**Problem:** `_binary_search_level()` called `_get_reader()` (with `_cache_lock`) for
+every comparison step — O(log n) lock acquisitions per get() on sorted L1+ levels.
+**Fix:** `_level_key_index` caches a sorted `[(first_key, path)]` list per level.
+Binary search compares against the array directly — 0 lock acquisitions during
+comparisons, 1 final `_get_reader()` call for the last_key check.
+Built in `_sort_level_after_compaction()`, rebuilt lazily on restart.
+**Impact:** 6 → 4 `_get_reader()` calls per get() (at 2 L1 files).
+At 100 files: 11 → 3 calls (73% reduction in lock acquisitions per read).
+
+## Iteration 24 — Event Hooks + atomic_append()
+**Added:**
+- `on_flush=fn(bytes, level)` — called after every memtable flush.
+- `on_compaction=fn(src, dst, bytes_in, bytes_out)` — called after every compaction.
+  Exceptions in callbacks are swallowed — they never crash the engine.
+- `db.atomic_append(key, item, separator=',')` — atomically append to a CSV string.
+
+## Iteration 23 — read_only=True + Cursor.seek_to_last()
+**Added:**
+- `LSMTree(directory, read_only=True)` — no WAL, no compaction, no writes.
+  Reads from SSTables and MANIFEST only. Raises `ReadOnlyError` on any write.
+  Useful for analytics, backup verification, multi-reader access.
+- `Cursor.seek_to_last()` — positions at the last key (O(n) scan).
+
+## Iteration 22 — l0_compact_size_bytes + per-level compaction bytes + info() updates
+**Added:**
+- `l0_compact_size_bytes=N` — also trigger L0 compaction when total L0 SSTable
+  size exceeds N bytes (supplement to the count-based trigger).
+- Per-level compaction byte tracking: `stats()['bytes_compacted_by_level']`.
+- `prefix_compression`, `l0_compact_size_bytes` in `db.info()`.
+- Full test suite verified: 297/297 passing.
+
+## Iteration 21 — Block-level Prefix Key Compression (27–89% key storage reduction)
+**Problem:** SSTable data blocks stored full keys for every entry.  Adjacent clustered
+keys ('user:0001'…'user:9999') repeated their prefix on every entry.
+**Fix:** `LSMTree(prefix_compression=True)` (default) stores only the suffix after the
+shared prefix with the previous key in the block.  New entry format:
+`shared_prefix_len(2) suffix_len(2) val_len(4) flags(1) suffix(…) value(…)`.
+Block markers `\xff\x02` (prefix-only) and `\xff\x03` (prefix + zlib) added.
+Backward compatible: old SSTables always readable.
+**Impact:** 2.16 MB → 1.57 MB (27%) for clustered user: keys.  Up to 89% for highly
+clustered workloads.
+
+## Iteration 20 — db.validate() + concurrent write test + benchmark [5]
+**Added:**
+- `db.validate()` — integrity checker: verifies files exist, SSTables readable, no
+  orphan .sst files. Returns `{'ok': bool, 'issues': [str]}`.
+- Fixed missing `Optional` import in `wal.py`.
+- `benchmarks.py` section [5]: concurrent write throughput benchmark.
+
+## Iteration 19 — Per-level Bloom FPR + updated demo.py + CHANGELOG
+**Added:**
+- `_BLOOM_FPR_BY_LEVEL` — deeper levels use higher FPR (L5/L6 = 10%), saving
+  ~50% of Bloom filter memory at L5/L6 with no correctness impact.
+- `demo.py` expanded from 7 → 15 sections covering all new features.
+- `CHANGELOG.md` created.
+
 ## Iteration 18 — Concurrent Write Throughput: 261 → 1,040 ops/sec (4×)
 **Problem:** `_write_lock` was held during `done.wait()` — the entire WAL fsync latency
 (~4 ms). Concurrent writers serialised; group-commit never batched more than 1 record.  
