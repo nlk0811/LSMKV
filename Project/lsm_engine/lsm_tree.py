@@ -497,6 +497,58 @@ class LSMTree:
             _done.wait()
         return True
 
+    def mset(self, mapping: dict, ttl_seconds: float = 0) -> None:
+        """Set multiple keys at once using one atomic WAL fsync.
+
+        Convenience wrapper over write(WriteBatch).  Accepts any dict-like.
+
+        Example:
+            db.mset({'user:1': 'Alice', 'user:2': 'Bob'})
+            db.mset({'sess:x': token}, ttl_seconds=3600)
+        """
+        self._check_writable()
+        batch = WriteBatch()
+        for k, v in mapping.items():
+            if ttl_seconds > 0:
+                batch.put_ttl(k, v, ttl_seconds)
+            else:
+                batch.put(k, v)
+        if len(batch) > 0:
+            self.write(batch)
+
+    def mget(self, keys) -> Dict[str, Optional[str]]:
+        """Get multiple keys at once.  Alias for get_many().
+
+        Example:
+            results = db.mget(['user:1', 'user:2', 'missing'])
+            # {'user:1': 'Alice', 'user:2': 'Bob', 'missing': None}
+        """
+        return self.get_many(keys)
+
+    def rename(self, old_key, new_key) -> bool:
+        """Rename a key: copy its value to new_key and delete old_key.
+
+        Returns True if old_key existed, False if it was absent (no-op).
+        The copy and delete are applied as one atomic WriteBatch so no
+        intermediate state is visible to concurrent readers.
+
+        Note: the read of old_key's value and the write happen in two
+        separate steps; for strict CAS-style rename use compare_and_swap()
+        in combination with pop().
+
+        Example:
+            db.rename('tmp:draft_1', 'post:published_1')
+        """
+        self._check_writable()
+        val = self.get(old_key)
+        if val is None:
+            return False
+        batch = WriteBatch()
+        batch.put(new_key, val)
+        batch.delete(old_key)
+        self.write(batch)
+        return True
+
     def range_delete(self, start=None, end=None) -> int:
         """Delete all keys in [start, end) atomically.  Returns count deleted.
 
