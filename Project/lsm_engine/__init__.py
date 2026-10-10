@@ -4,6 +4,7 @@ from .bloom_filter import BloomFilter
 from .cursor       import Cursor
 from .pipeline     import Pipeline
 from .snapshot     import Snapshot
+from .transaction  import Transaction
 from .skip_list    import SkipList
 from .ttl          import encode as ttl_encode, decode as ttl_decode, is_expired as ttl_is_expired
 from .write_batch  import WriteBatch
