@@ -497,6 +497,38 @@ class LSMTree:
             _done.wait()
         return True
 
+    def has(self, key) -> bool:
+        """Return True if key exists and has not expired.
+
+        Equivalent to `get(key) is not None` but communicates intent clearly.
+        The Bloom filter and key-range pre-filter are still applied — the only
+        difference from get() is the None/non-None check at the end.
+        """
+        return self.get(key) is not None
+
+    def touch(self, key, ttl_seconds: float) -> bool:
+        """Extend (or add) a TTL to an existing key without changing its value.
+
+        Returns True if the key existed and the TTL was updated.
+        Returns False if the key was absent (no new key is created).
+
+        Example:
+            db.put('session:abc', token, ttl_seconds=3600)
+            # ... user is active ...
+            db.touch('session:abc', ttl_seconds=3600)   # slide expiry window
+        """
+        self._check_writable()
+        existed = [False]
+
+        def _touch(v):
+            if v is not None:
+                existed[0] = True
+                return v   # same value, re-encoded with new TTL by update()
+            return None   # absent — don't create
+
+        self.update(key, _touch, ttl_seconds=ttl_seconds)
+        return existed[0]
+
     def atomic_append(self, key, item, separator: str = ',') -> str:
         """Atomically append item to a string list stored at key.
 
@@ -1650,6 +1682,11 @@ class LSMTree:
         # If L0 was just compacted, wake any writers stalled on the stop trigger.
         if src_level == 0:
             self._l0_drained.set()
+        # Wake the bg loop immediately so it can check whether another level
+        # is now over budget (compaction cascade: L0→L1 may push L1 over budget
+        # requiring L1→L2, etc.).  Without this, the next check waits ~2s.
+        if not self._shutdown.is_set():
+            self._imm_pending.set()
         # Sort dst_level by first_key so future get()s can binary-search it.
         if dst_level > 0:
             self._sort_level_after_compaction(dst_level)
