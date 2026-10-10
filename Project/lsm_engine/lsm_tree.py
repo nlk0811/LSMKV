@@ -758,6 +758,79 @@ class LSMTree:
             'elapsed_seconds':   round(time.monotonic() - t0, 2),
         }
 
+    def filter_scan(self, filter_fn, start=None, end=None
+                    ) -> Iterator[Tuple[str, str]]:
+        """Scan and yield only (key, value) pairs that satisfy filter_fn.
+
+        filter_fn(key: str, value: str) → bool.  Called for each live entry;
+        entries where it returns False are skipped.  Tombstones and expired
+        TTL keys are never passed to filter_fn.
+
+        Example — find all users with a specific status:
+            for key, val in db.filter_scan(
+                lambda k, v: '"status":"active"' in v,
+                start='user:', end='user;'):
+                process(key, val)
+        """
+        for key, value in self.scan(start, end):
+            if filter_fn(key, value):
+                yield key, value
+
+    def reverse_scan(self, start=None, end=None) -> Iterator[Tuple[str, str]]:
+        """Scan in reverse sorted order (largest key first).
+
+        Equivalent to `reversed(list(scan(start, end)))` but expressed as an
+        iterator.  O(n) memory — all matching entries are buffered before
+        any are yielded.  For very large ranges, prefer forward scan + client-
+        side reversal or use `Cursor.seek_to_last()` for single-entry lookups.
+
+        Example — most recent orders first:
+            for key, val in db.reverse_scan('order:', 'order;'):
+                display(key, val)
+        """
+        results = list(self.scan(start, end))
+        yield from reversed(results)
+
+    def memory_usage(self) -> dict:
+        """Estimate current in-memory footprint broken down by component.
+
+        All values are in bytes.  'total_estimated' is the sum of the
+        individual components; actual RSS may differ due to Python object
+        overhead and allocator fragmentation.
+        """
+        memtable_b  = self._memtable.size_bytes
+        imm_b       = self._imm.size_bytes if self._imm else 0
+        bc_b        = self._block_cache.stats()['block_cache_bytes']
+
+        # Reader cache: each open reader holds its sparse index + Bloom filter.
+        index_b = 0
+        bloom_b = 0
+        with self._cache_lock:
+            readers = list(self._reader_cache.values())
+        for rdr in readers:
+            if hasattr(rdr, '_index'):
+                # Each entry: first_key bytes + 2 int64 + 1 int32 = key_len + 20
+                index_b += sum(len(fk) + 20 for fk, _, _ in rdr._index)
+            if hasattr(rdr, '_bloom'):
+                bloom_b += len(rdr._bloom.bits)
+
+        # Level key index: (first_key, path) pairs per level
+        lki_b = sum(
+            sum(len(fk) + len(p) + 8 for fk, p in pairs)
+            for pairs in self._level_key_index.values()
+        )
+
+        breakdown = {
+            'memtable_bytes':          memtable_b,
+            'imm_memtable_bytes':      imm_b,
+            'block_cache_bytes':       bc_b,
+            'reader_cache_index_bytes':index_b,
+            'reader_cache_bloom_bytes':bloom_b,
+            'level_key_index_bytes':   lki_b,
+        }
+        breakdown['total_estimated']  = sum(breakdown.values())
+        return breakdown
+
     def iter_batches(self,
                      batch_size: int = 100,
                      start = None,
