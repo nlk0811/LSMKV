@@ -791,6 +791,88 @@ class LSMTree:
         results = list(self.scan(start, end))
         yield from reversed(results)
 
+    def export(self, path: str, format: str = 'jsonl',
+               start=None, end=None) -> int:
+        """Export all live keys to a file.  Returns the number of entries written.
+
+        format='jsonl': one JSON object per line — `{"k":"key","v":"value"}`.
+        The output file is human-readable and suitable for migration, seeding
+        test databases, or archiving a key range.
+
+        Example:
+            db.export('/tmp/users.jsonl', start='user:', end='user;')
+        """
+        import json as _json
+        count = 0
+        with open(path, 'w') as f:
+            for key, value in self.scan(start, end):
+                f.write(_json.dumps({'k': key, 'v': value}) + '\n')
+                count += 1
+        return count
+
+    def import_(self, path: str, format: str = 'jsonl',
+                batch_size: int = 1000,
+                ttl_seconds: float = 0) -> int:
+        """Import entries from a file previously exported with export().
+        Returns the number of entries imported.
+
+        Entries are inserted atomically in batches of batch_size for efficiency.
+        If ttl_seconds > 0, all imported keys expire that many seconds from now.
+
+        Example:
+            db.import_('/tmp/users.jsonl')
+        """
+        self._check_writable()
+        import json as _json
+        count = 0
+        batch = WriteBatch()
+
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                obj = _json.loads(line)
+                key, value = obj['k'], obj['v']
+                if ttl_seconds > 0:
+                    batch.put_ttl(key, value, ttl_seconds)
+                else:
+                    batch.put(key, value)
+                count += 1
+                if len(batch) >= batch_size:
+                    self.write(batch)
+                    batch = WriteBatch()
+
+        if batch:
+            self.write(batch)
+        return count
+
+    def clear(self, prefix: str = '') -> int:
+        """Delete all keys (or all keys starting with prefix).  Returns count deleted.
+
+        With no argument: deletes every key in the database.
+        With a prefix: equivalent to delete_prefix(prefix).
+
+        Example:
+            db.clear('session:')   # clear all sessions
+            db.clear()             # wipe the database
+        """
+        self._check_writable()
+        if prefix:
+            return self.delete_prefix(prefix)
+        # Delete everything: scan all keys and batch-delete
+        batch = WriteBatch()
+        count = 0
+        for key, _ in self.scan():
+            batch.delete(key)
+            count += 1
+            if len(batch) >= 1000:
+                self.write(batch)
+                batch = WriteBatch()
+        if batch:
+            self.write(batch)
+        return count
+
     def memory_usage(self) -> dict:
         """Estimate current in-memory footprint broken down by component.
 
