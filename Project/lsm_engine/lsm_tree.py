@@ -51,6 +51,10 @@ from .wal          import WAL, OpType
 from .write_batch  import WriteBatch
 from ._utils       import fsync_fd, fsync_dir, RateLimiter
 
+class ReadOnlyError(Exception):
+    """Raised when a write operation is attempted on a read-only LSMTree."""
+
+
 MEMTABLE_LIMIT      = 4 * 1024 * 1024   # 4 MB before flush
 L0_COMPACT_TRIGGER  = 4                  # trigger L0→L1 compaction
 # Bloom filter FPR by destination level.
@@ -107,7 +111,8 @@ class LSMTree:
                  compression: str = 'none',
                  memtable_size_bytes: int = 4 * 1024 * 1024,
                  prefix_compression: bool = True,
-                 l0_compact_size_bytes: int = 0):
+                 l0_compact_size_bytes: int = 0,
+                 read_only: bool = False):
         """
         sync_writes=True  (default) — group-commit WAL fsync.
         sync_writes=False — no fsync; OS decides when to flush (benchmarks only).
@@ -123,6 +128,11 @@ class LSMTree:
             key storage reduction for clustered keys.  Default True.
         l0_compact_size_bytes: also trigger L0 compaction when total L0 size
             exceeds this threshold (0 = count-only trigger, default).
+        read_only: open the database in read-only mode.
+            No WAL, no background compaction, no writes.  Reads from SSTables
+            and the MANIFEST only.  Useful for analytics, backup verification,
+            or running multiple reader processes on the same database directory.
+            Any call to put/delete/write/update/flush/compact raises ReadOnlyError.
         """
         self.dir = directory
         os.makedirs(directory, exist_ok=True)
@@ -165,19 +175,20 @@ class LSMTree:
         self._memtable_limit      = memtable_size_bytes
         # Optional L0 size-based compact trigger (0 = disabled).
         self._l0_compact_size     = l0_compact_size_bytes
+        # Read-only flag: disables all write paths.
+        self._read_only           = read_only
 
         # Levels known to be sorted by first_key (enables binary search in get()).
-        # Loaded from MANIFEST on startup so binary search is active immediately
-        # after a restart without waiting for the first in-session compaction.
         self._sorted_levels: set = set(self._manifest._sorted_levels)
 
-        # Parallel compaction: thread pool + per-level locks.
-        # Two jobs may run concurrently only if they don't share a level.
-        # Locks are acquired in ascending level-number order to prevent deadlock.
-        self._compaction_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max(1, compaction_threads),
-            thread_name_prefix='lsmkv-compact',
-        )
+        # Parallel compaction: skipped in read-only mode.
+        if not read_only:
+            self._compaction_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=max(1, compaction_threads),
+                thread_name_prefix='lsmkv-compact',
+            )
+        else:
+            self._compaction_executor = None  # not used in read-only mode
         self._compaction_locks = {lvl: threading.Lock() for lvl in range(MAX_LEVELS)}
         self._compaction_futures: Dict[int, concurrent.futures.Future] = {}
         self._compaction_fut_lock = threading.Lock()
@@ -185,14 +196,25 @@ class LSMTree:
         # Live metrics, accessible via db.metrics or included in db.stats().
         self.metrics = EngineMetrics()
 
-        self._cleanup_orphans()
-        self._recover()
-
-        self._shutdown = threading.Event()
-        self._bg = threading.Thread(target=self._bg_loop, daemon=True)
-        self._bg.start()
+        if not read_only:
+            self._cleanup_orphans()
+            self._recover()
+            self._shutdown = threading.Event()
+            self._bg = threading.Thread(target=self._bg_loop, daemon=True)
+            self._bg.start()
+        else:
+            # Read-only: no background thread, no WAL recovery needed.
+            # SSTables in the MANIFEST are the authoritative data source.
+            self._shutdown = threading.Event()   # needed for close()
 
     # ── public API ─────────────────────────────────────────────────────────────
+
+    def _check_writable(self):
+        if self._read_only:
+            raise ReadOnlyError(
+                "This LSMTree was opened in read-only mode.  "
+                "Use LSMTree(directory, read_only=False) to enable writes."
+            )
 
     def _maybe_stall_writes(self):
         """Apply back-pressure if L0 is accumulating faster than compaction drains it.
@@ -225,6 +247,7 @@ class LSMTree:
         for the fsync event.  This lets concurrent writers overlap their WAL
         submissions so the gc-thread can batch them in one fsync.
         """
+        self._check_writable()
         _t0 = time.perf_counter()
         self._maybe_stall_writes()
         kb = _b(key)
@@ -243,6 +266,7 @@ class LSMTree:
         self.metrics.put_latency.record((time.perf_counter() - _t0) * 1_000_000)
 
     def delete(self, key):
+        self._check_writable()
         self._maybe_stall_writes()
         kb = _b(key)
         with self._write_lock:
@@ -257,6 +281,7 @@ class LSMTree:
 
     def write(self, batch: WriteBatch):
         """Apply a WriteBatch atomically: one lock, one WAL fsync, all memtable inserts."""
+        self._check_writable()
         if len(batch) == 0:
             return
         self._maybe_stall_writes()
@@ -378,7 +403,7 @@ class LSMTree:
         return None
 
     def update(self, key, fn, ttl_seconds: float = 0):
-        """Atomically apply fn(current_value) → new_value.
+        """Atomically apply fn(current_value) → new_value.  Raises ReadOnlyError if read_only.
 
         The entire read-compute-write is serialized under the write lock so no
         concurrent writer can interleave.  Concurrent readers will see either
@@ -393,6 +418,7 @@ class LSMTree:
         Example — atomic counter increment:
             db.update('hits', lambda v: str(int(v or 0) + 1))
         """
+        self._check_writable()
         _done = None
         with self._write_lock:
             current = self.get(key)
@@ -417,6 +443,7 @@ class LSMTree:
         return new_val
 
     def compare_and_swap(self, key, expected, new_value) -> bool:
+        self._check_writable()
         """Atomic compare-and-swap: set key=new_value only if current == expected.
 
         Returns True if the swap occurred; False if the value didn't match.
@@ -450,6 +477,7 @@ class LSMTree:
         return True
 
     def increment(self, key, amount: int = 1) -> int:
+        self._check_writable()
         """Atomically add amount to an integer value.  Returns the new value.
 
         If the key doesn't exist, treats the current value as 0.
@@ -630,6 +658,7 @@ class LSMTree:
         return False
 
     def compact_all(self, timeout_seconds: float = 300) -> dict:
+        self._check_writable()
         """Flush all in-memory data and fully compact all levels.  Blocks until done.
 
         Useful before a backup, before performance benchmarking of read-heavy
@@ -682,6 +711,7 @@ class LSMTree:
             yield batch
 
     def flush(self):
+        self._check_writable()
         """Force-flush the active memtable (and any pending immutable) to disk.
 
         Useful before taking a snapshot to ensure all recent writes are
@@ -726,6 +756,7 @@ class LSMTree:
         return Cursor(self)
 
     def delete_prefix(self, prefix) -> int:
+        self._check_writable()
         """Delete all keys starting with prefix.  Returns the number of keys deleted.
 
         Implemented as a single WriteBatch so all deletes are applied atomically
@@ -834,12 +865,14 @@ class LSMTree:
         """
         return {
             'directory':                    self.dir,
-            'sync_writes':                  self._wal._sync,
+            'read_only':                    self._read_only,
+            'sync_writes':                  (self._wal._sync if not self._read_only else None),
             'compression':                  self._compression,
             'prefix_compression':           self._prefix_compression,
             'memtable_size_bytes':          self._memtable_limit,
             'block_cache_bytes':            self._block_cache._capacity,
-            'compaction_threads':           self._compaction_executor._max_workers,
+            'compaction_threads':           (self._compaction_executor._max_workers
+                                            if self._compaction_executor else 0),
             'compaction_rate_bytes_per_sec':self._compaction_limiter._rate,
             'l0_compact_size_bytes':        self._l0_compact_size,
             'sorted_levels':                sorted(self._sorted_levels),
@@ -850,10 +883,13 @@ class LSMTree:
         }
 
     def close(self):
+        if self._read_only:
+            self._drain_reader_cache()
+            return
         self._shutdown.set()
-        self._imm_pending.set()           # wake bg thread so it exits promptly
+        self._imm_pending.set()
         self._bg.join(timeout=5)
-        self._compaction_executor.shutdown(wait=True)   # drain in-flight jobs
+        self._compaction_executor.shutdown(wait=True)
         with self._write_lock:
             if self._imm is not None:
                 self._flush_imm()
