@@ -106,7 +106,8 @@ class LSMTree:
                  compaction_filter=None,
                  compression: str = 'none',
                  memtable_size_bytes: int = 4 * 1024 * 1024,
-                 prefix_compression: bool = True):
+                 prefix_compression: bool = True,
+                 l0_compact_size_bytes: int = 0):
         """
         sync_writes=True  (default) — group-commit WAL fsync.
         sync_writes=False — no fsync; OS decides when to flush (benchmarks only).
@@ -118,9 +119,10 @@ class LSMTree:
             When 'zlib', each SSTable data block is compressed before writing.
             Reduces disk usage by 30-90% for structured / JSON data.
         memtable_size_bytes: flush threshold for the active memtable (default 4 MB).
-            Larger values reduce flush frequency and write amplification but
-            increase memory usage and crash-recovery WAL replay time.
-            Smaller values reduce memory usage but increase compaction pressure.
+        prefix_compression: store key suffixes only within blocks — up to 89%
+            key storage reduction for clustered keys.  Default True.
+        l0_compact_size_bytes: also trigger L0 compaction when total L0 size
+            exceeds this threshold (0 = count-only trigger, default).
         """
         self.dir = directory
         os.makedirs(directory, exist_ok=True)
@@ -161,6 +163,8 @@ class LSMTree:
         self._prefix_compression  = prefix_compression
         # Memtable flush threshold (configurable; default 4 MB).
         self._memtable_limit      = memtable_size_bytes
+        # Optional L0 size-based compact trigger (0 = disabled).
+        self._l0_compact_size     = l0_compact_size_bytes
 
         # Levels known to be sorted by first_key (enables binary search in get()).
         # Loaded from MANIFEST on startup so binary search is active immediately
@@ -829,18 +833,20 @@ class LSMTree:
         opened with the expected settings.
         """
         return {
-            'directory':                   self.dir,
-            'sync_writes':                 self._wal._sync,
-            'compression':                 self._compression,
-            'memtable_size_bytes':         self._memtable_limit,
-            'block_cache_bytes':           self._block_cache._capacity,
-            'compaction_threads':          self._compaction_executor._max_workers,
-            'compaction_rate_bytes_per_sec': self._compaction_limiter._rate,
-            'sorted_levels':               sorted(self._sorted_levels),
-            'max_levels':                  MAX_LEVELS,
-            'l0_compact_trigger':          L0_COMPACT_TRIGGER,
-            'l0_slowdown_trigger':         L0_SLOWDOWN_TRIGGER,
-            'l0_stop_trigger':             L0_STOP_TRIGGER,
+            'directory':                    self.dir,
+            'sync_writes':                  self._wal._sync,
+            'compression':                  self._compression,
+            'prefix_compression':           self._prefix_compression,
+            'memtable_size_bytes':          self._memtable_limit,
+            'block_cache_bytes':            self._block_cache._capacity,
+            'compaction_threads':           self._compaction_executor._max_workers,
+            'compaction_rate_bytes_per_sec':self._compaction_limiter._rate,
+            'l0_compact_size_bytes':        self._l0_compact_size,
+            'sorted_levels':                sorted(self._sorted_levels),
+            'max_levels':                   MAX_LEVELS,
+            'l0_compact_trigger':           L0_COMPACT_TRIGGER,
+            'l0_slowdown_trigger':          L0_SLOWDOWN_TRIGGER,
+            'l0_stop_trigger':              L0_STOP_TRIGGER,
         }
 
     def close(self):
@@ -1038,14 +1044,16 @@ class LSMTree:
     def _schedule_compactions(self):
         """Submit compaction jobs for all levels that are over budget.
 
-        S-08: multiple non-adjacent level pairs compact in parallel (e.g.
-        L0→L1 and L2→L3 simultaneously).  Adjacent pairs serialise via
-        per-level locks acquired inside _compact_into.
+        L0 is triggered by file count OR by total size (when l0_compact_size > 0).
+        S-08: multiple non-adjacent level pairs compact in parallel.
         """
         with self._lock:
             l0_count = len(self._manifest.levels[0])
+            l0_size  = self._manifest.level_size(0)
 
-        if l0_count >= L0_COMPACT_TRIGGER:
+        size_trigger = (self._l0_compact_size > 0 and
+                        l0_size >= self._l0_compact_size)
+        if l0_count >= L0_COMPACT_TRIGGER or size_trigger:
             self._submit_compaction(0)
 
         for lvl in range(1, MAX_LEVELS - 1):
@@ -1251,6 +1259,7 @@ class LSMTree:
             except OSError:
                 pass
         self.metrics.inc(compactions=1, bytes_compacted=bytes_in)
+        self.metrics.inc_level(dst_level, bytes_in)   # per-level write-amp tracking
         # Sort dst_level by first_key so future get()s can binary-search it.
         if dst_level > 0:
             self._sort_level_after_compaction(dst_level)
