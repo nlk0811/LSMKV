@@ -3,6 +3,7 @@ from .block_cache  import BlockCache
 from .bloom_filter import BloomFilter
 from .counter      import Counter
 from .cursor       import Cursor
+from .index        import Index
 from .leaderboard  import Leaderboard
 from .namespace    import Namespace
 from .queue        import Queue
