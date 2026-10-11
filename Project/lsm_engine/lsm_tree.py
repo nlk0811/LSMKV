@@ -41,6 +41,7 @@ from .block_cache  import BlockCache
 from .bloom_filter import BloomFilter
 from .compaction   import compact
 from .counter      import Counter
+from .index        import Index
 from .leaderboard  import Leaderboard
 from .namespace    import Namespace
 from .queue        import Queue
@@ -682,6 +683,20 @@ class LSMTree:
         for k in self.scan_keys(end=key):
             result = k
         return result
+
+    def index(self, name: str) -> 'Index':
+        """Return a persistent full-text search Index.
+
+        Tokenizes documents and stores an inverted index.  Search returns
+        doc_ids sorted by relevance (number of query tokens matched).
+
+        Example:
+            idx = db.index('articles')
+            idx.add('doc:1', 'Python is great for data science')
+            idx.add('doc:2', 'Java and Python are popular')
+            idx.search('Python data')  # → ['doc:1', 'doc:2'] by relevance
+        """
+        return Index(self, name)
 
     def leaderboard(self, name: str) -> 'Leaderboard':
         """Return a persistent Leaderboard (sorted set by score).
