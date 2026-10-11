@@ -4,6 +4,7 @@ from .bloom_filter import BloomFilter
 from .counter      import Counter
 from .cursor       import Cursor
 from .index        import Index
+from .timeseries   import TimeSeries
 from .leaderboard  import Leaderboard
 from .namespace    import Namespace
 from .queue        import Queue
