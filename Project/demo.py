@@ -181,5 +181,58 @@ if __name__ == '__main__':
     db_comp.close()
     shutil.rmtree(DB + '_comp')
 
+    # ── 16. Pipeline ──────────────────────────────────────────────────────────
+    sep('16. Pipeline — bulk writes with one WAL fsync')
+    db3 = LSMTree(DB + '_pipe', sync_writes=False)
+    with db3.pipeline() as pipe:
+        for i in range(100):
+            pipe.put(f'batch:{i:04d}', f'val{i}')
+    print(f'  100 keys via pipeline: {db3.count("batch:", None)} entries')
+    db3.close()
+    shutil.rmtree(DB + '_pipe')
+
+    # ── 17. Transaction ───────────────────────────────────────────────────────
+    sep('17. Transaction — optimistic multi-key atomic update')
+    db4 = LSMTree(DB + '_txn', sync_writes=False)
+    db4.put('account:1', '1000')
+    db4.put('account:2', '500')
+    for _ in range(3):
+        with db4.transaction() as txn:
+            a = int(txn.get('account:1') or 0)
+            b = int(txn.get('account:2') or 0)
+            if a >= 100:
+                txn.put('account:1', str(a - 100))
+                txn.put('account:2', str(b + 100))
+        if txn.committed:
+            break
+    print(f'  account:1 → {db4.get("account:1")}  (was 1000, transferred 100)')
+    print(f'  account:2 → {db4.get("account:2")}  (was 500, received 100)')
+    db4.close()
+    shutil.rmtree(DB + '_txn')
+
+    # ── 18. Range and neighbor operations ─────────────────────────────────────
+    sep('18. Range ops — delete_prefix, ceiling_key, floor_key, range_delete')
+    db5 = LSMTree(DB + '_range', sync_writes=False)
+    for c in 'abcdefghijklmnopqrstuvwxyz':
+        db5.put(c, c.upper())
+    print(f'  ceiling_key("m") = {db5.ceiling_key("m")}  (≥ m)')
+    print(f'  floor_key("m") = {db5.floor_key("m")}    (≤ m)')
+    print(f'  ceiling_key("m1") = {db5.ceiling_key("m1")}  (next after m)')
+    n = db5.range_delete('r', 'v')
+    print(f'  range_delete(r→v): removed {n} keys')
+    db5.close()
+    shutil.rmtree(DB + '_range')
+
+    # ── 19. Atomic numeric ops ─────────────────────────────────────────────────
+    sep('19. Atomic numeric ops — atomic_max, atomic_min')
+    db6 = LSMTree(DB + '_nums', sync_writes=False)
+    for score in [72, 91, 55, 88, 63]:
+        db6.atomic_max('high_score', score)
+        db6.atomic_min('low_score', score)
+    print(f'  high_score = {db6.get("high_score")}  (max of 72,91,55,88,63)')
+    print(f'  low_score  = {db6.get("low_score")}  (min of 72,91,55,88,63)')
+    db6.close()
+    shutil.rmtree(DB + '_nums')
+
     shutil.rmtree(DB)
     print('\nDemo complete.\n')
