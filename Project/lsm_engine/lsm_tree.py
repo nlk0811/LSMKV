@@ -41,6 +41,7 @@ from .block_cache  import BlockCache
 from .bloom_filter import BloomFilter
 from .compaction   import compact
 from .counter      import Counter
+from .graph        import Graph
 from .index        import Index
 from .timeseries   import TimeSeries
 from .leaderboard  import Leaderboard
@@ -694,6 +695,16 @@ class LSMTree:
             cpu.average(time.time() - 60, time.time())  # avg last minute
         """
         return TimeSeries(self, name)
+
+    def graph(self, name: str) -> 'Graph':
+        """Return a persistent directed Graph.
+
+        Example:
+            g = db.graph('social')
+            g.add_edge('alice', 'bob')
+            g.neighbors('alice')   # ['bob']
+        """
+        return Graph(self, name)
 
     def index(self, name: str) -> 'Index':
         """Return a persistent full-text search Index.
