@@ -42,6 +42,7 @@ from .bloom_filter import BloomFilter
 from .compaction   import compact
 from .counter      import Counter
 from .namespace    import Namespace
+from .queue        import Queue
 from .cursor       import Cursor
 from .manifest     import Manifest, MAX_LEVELS
 from .pipeline     import Pipeline
@@ -680,6 +681,21 @@ class LSMTree:
         for k in self.scan_keys(end=key):
             result = k
         return result
+
+    def queue(self, name: str) -> 'Queue':
+        """Return a persistent FIFO Queue backed by a named set of keys.
+
+        Items survive process restarts (stored with WAL durability).
+        Atomic push and pop using optimistic transactions with retry.
+
+        Example:
+            jobs = db.queue('background_jobs')
+            jobs.push('send_email:user_1')
+            jobs.push('send_email:user_2')
+            while item := jobs.pop():
+                send_email(item)
+        """
+        return Queue(self, name)
 
     def namespace(self, prefix: str) -> 'Namespace':
         """Return a Namespace (prefix-scoped view) of this database.
