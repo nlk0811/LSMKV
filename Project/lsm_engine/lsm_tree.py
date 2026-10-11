@@ -193,6 +193,9 @@ class LSMTree:
 
         # Levels known to be sorted by first_key (enables binary search in get()).
         self._sorted_levels: set = set(self._manifest._sorted_levels)
+        # Singleflight registry: prevents duplicate computation in get_or_compute_once().
+        self._sf_futures: Dict[bytes, 'concurrent.futures.Future'] = {}
+        self._sf_lock    = threading.Lock()
         # Pre-built sorted (first_key, path) list per level.
         # Binary search uses this directly — zero _get_reader() calls during
         # comparison, avoiding _cache_lock contention on every search step.
@@ -1149,6 +1152,63 @@ class LSMTree:
                 ...
         """
         return self.scan(start, end)
+
+    def get_or_compute_once(self, key, fn, ttl_seconds: float = 0,
+                            timeout: float = 60):
+        """Like get_or_set() but guarantees fn() is called at most once per key
+        under concurrent access (singleflight / deduplicate pattern).
+
+        If N threads all call get_or_compute_once() simultaneously on the same
+        absent key, exactly one calls fn().  The other N-1 block and receive
+        the same result once the computation finishes.  This prevents
+        thundering-herd on expensive cache misses (DB queries, API calls, etc.).
+
+        timeout: how long other threads wait for the in-flight computation (s).
+        Raises TimeoutError if the computation takes longer than timeout.
+
+        Example — cache-aside with guaranteed single computation:
+            user = db.get_or_compute_once(
+                f'user:{uid}',
+                lambda: expensive_query(uid),
+                ttl_seconds=300,
+            )
+        """
+        val = self.get(key)
+        if val is not None:
+            return val
+
+        kb = _b(key)
+        compute_now = False
+        future = None
+
+        with self._sf_lock:
+            if kb in self._sf_futures:
+                future = self._sf_futures[kb]   # another thread is computing
+            else:
+                future = concurrent.futures.Future()
+                self._sf_futures[kb] = future
+                compute_now = True
+
+        if compute_now:
+            try:
+                result = fn()
+                if result is not None:
+                    self.put(key, result, ttl_seconds=ttl_seconds)
+                future.set_result(result)
+                return result
+            except Exception as exc:
+                future.set_exception(exc)
+                raise
+            finally:
+                with self._sf_lock:
+                    self._sf_futures.pop(kb, None)
+        else:
+            try:
+                return future.result(timeout=timeout)
+            except concurrent.futures.TimeoutError:
+                raise TimeoutError(
+                    f'get_or_compute_once: computation for {key!r} '
+                    f'did not complete within {timeout}s')
 
     def get_or_set(self, key, default_fn, ttl_seconds: float = 0):
         """Return value for key; if absent, compute and set it via default_fn().
