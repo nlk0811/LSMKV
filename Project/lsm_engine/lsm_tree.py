@@ -40,6 +40,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 from .block_cache  import BlockCache
 from .bloom_filter import BloomFilter
 from .compaction   import compact
+from .counter      import Counter
 from .cursor       import Cursor
 from .manifest     import Manifest, MAX_LEVELS
 from .pipeline     import Pipeline
@@ -678,6 +679,42 @@ class LSMTree:
         for k in self.scan_keys(end=key):
             result = k
         return result
+
+    def counter(self, key: str) -> Counter:
+        """Return a persistent Counter backed by key.
+
+        The counter is durable (survives restarts), thread-safe, and atomic.
+
+        Example:
+            visits = db.counter('page:home:visits')
+            visits.incr()
+            print(int(visits))   # 1
+        """
+        return Counter(self, key)
+
+    def rate_limit(self, key: str, max_count: int,
+                   window_seconds: float) -> bool:
+        """Fixed-window rate limiter.  Returns True if under limit.
+
+        Uses a per-window counter key with auto-expiry.  Suitable for
+        request throttling, API rate limits, and abuse prevention.
+
+        Example:
+            if not db.rate_limit(f'ratelimit:{user_id}', 100, 60):
+                return 429   # Too Many Requests
+
+        Note: this is a fixed-window counter (not sliding).  All N requests
+        in the first second of a window allow another N in the last second,
+        giving up to 2× the limit at window boundaries.
+        """
+        import math
+        window_idx = math.floor(time.time() / window_seconds)
+        rl_key     = f'__rl:{key}:{window_idx}'
+        count      = self.increment(rl_key, 1)
+        if count == 1:
+            # First hit in this window — set expiry so the key cleans itself up
+            self.expire(rl_key, window_seconds * 2)
+        return count <= max_count
 
     def lock(self, key: str, owner: str, ttl_seconds: float = 30) -> bool:
         """Acquire a distributed lock.  Returns True if acquired, False if held.
