@@ -4,6 +4,7 @@ from .bloom_filter import BloomFilter
 from .counter      import Counter
 from .cursor       import Cursor
 from .namespace    import Namespace
+from .queue        import Queue
 from .pipeline     import Pipeline
 from .snapshot     import Snapshot
 from .transaction  import Transaction
