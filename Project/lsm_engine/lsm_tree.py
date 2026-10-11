@@ -1232,6 +1232,46 @@ class LSMTree:
             self.put(key, new_val, ttl_seconds=ttl_seconds)
         return new_val
 
+    def expiring_soon(self, within_seconds: float,
+                      start=None, end=None
+                      ) -> Iterator[Tuple[str, str, float]]:
+        """Yield (key, value, ttl_remaining) for keys expiring within within_seconds.
+
+        Useful for proactive TTL renewal (slide expiry windows before they close)
+        and cache warming (pre-fetch values about to be evicted).
+
+        Example — renew any session expiring in the next 5 minutes:
+            for key, val, remaining in db.expiring_soon(300, start='session:'):
+                db.touch(key, ttl_seconds=3600)
+        """
+        for key, val, ttl in self.scan_with_ttl(start, end):
+            if ttl is not None and 0 <= ttl <= within_seconds:
+                yield key, val, ttl
+
+    def first_key(self, start=None, end=None) -> Optional[str]:
+        """Return the smallest live key in [start, end), or None if empty.
+
+        O(log n) — delegates to scan_keys() which uses binary search.
+        Equivalent to ceiling_key(start) but more expressive.
+
+        Example:
+            oldest_order = db.first_key('order:', 'order;')
+        """
+        return next(self.scan_keys(start, end), None)
+
+    def last_key(self, start=None, end=None) -> Optional[str]:
+        """Return the largest live key in [start, end), or None if empty.
+
+        O(n) — scans to find the last key in range.
+
+        Example:
+            latest_log = db.last_key('log:2026-10-')
+        """
+        result = None
+        for k in self.scan_keys(start, end):
+            result = k
+        return result
+
     def scan_with_ttl(self,
                       start=None,
                       end=None) -> Iterator[Tuple[str, str, Optional[float]]]:
