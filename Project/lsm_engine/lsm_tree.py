@@ -679,6 +679,63 @@ class LSMTree:
             result = k
         return result
 
+    def lock(self, key: str, owner: str, ttl_seconds: float = 30) -> bool:
+        """Acquire a distributed lock.  Returns True if acquired, False if held.
+
+        Atomically sets key=owner (with TTL) only if key is absent.
+        The TTL acts as a safety expiry — the lock is auto-released if the
+        holder crashes without calling unlock().
+
+        Example:
+            if db.lock('job:processor', 'worker-1', ttl_seconds=300):
+                try:
+                    do_work()
+                finally:
+                    db.unlock('job:processor', 'worker-1')
+        """
+        self._check_writable()
+        kb      = _b(key)
+        acquired = False
+        _done   = None
+
+        with self._write_lock:
+            # get() is safe to call inside _write_lock (acquires _lock, not _write_lock)
+            current = self.get(key)
+            if current is None:
+                vb    = _ttl_encode(_b(owner), time.time() + ttl_seconds)
+                _done = self._wal.submit_put(kb, vb)
+                self._memtable.put(kb, vb)
+                self.metrics.inc(puts=1, wal_records=1,
+                                 bytes_written_user=len(kb) + len(vb))
+                if self._memtable.size_bytes >= self._memtable_limit:
+                    self._maybe_rotate()
+                acquired = True
+
+        if _done:
+            _done.wait()
+        return acquired
+
+    def unlock(self, key: str, owner: str) -> bool:
+        """Release a lock.  Returns True if we held the lock.
+
+        Only deletes the lock if the current owner matches owner.
+        If owner does not match (lock expired and re-acquired by someone else),
+        returns False and leaves the lock intact.
+        """
+        self._check_writable()
+        return self.compare_and_swap(key, owner, None)
+
+    def extend_lock(self, key: str, owner: str, ttl_seconds: float = 30) -> bool:
+        """Extend a lock's TTL if we still hold it.  Returns True if renewed.
+
+        Useful for long-running jobs that need to heartbeat their lock.
+        Returns False if the lock expired or is held by someone else.
+        """
+        self._check_writable()
+        if self.get(key) != owner:
+            return False
+        return self.expire(key, ttl_seconds)
+
     def expire(self, key, ttl_seconds: float) -> bool:
         """Set or extend the TTL on an existing key.  Alias for touch().
 
