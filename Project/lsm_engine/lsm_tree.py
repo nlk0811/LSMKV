@@ -41,6 +41,7 @@ from .block_cache  import BlockCache
 from .bloom_filter import BloomFilter
 from .compaction   import compact
 from .counter      import Counter
+from .bitmap       import Bitmap
 from .graph        import Graph
 from .index        import Index
 from .timeseries   import TimeSeries
@@ -695,6 +696,17 @@ class LSMTree:
             cpu.average(time.time() - 60, time.time())  # avg last minute
         """
         return TimeSeries(self, name)
+
+    def bitmap(self, name: str) -> 'Bitmap':
+        """Return a persistent Bitmap for space-efficient boolean flags.
+
+        Example:
+            seen = db.bitmap('seen_homepage')
+            seen.set(user_id)     # mark as seen
+            seen.get(user_id)     # True/False
+            seen.count()          # number of set bits
+        """
+        return Bitmap(self, name)
 
     def graph(self, name: str) -> 'Graph':
         """Return a persistent directed Graph.
