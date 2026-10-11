@@ -42,6 +42,7 @@ from .bloom_filter import BloomFilter
 from .compaction   import compact
 from .counter      import Counter
 from .index        import Index
+from .timeseries   import TimeSeries
 from .leaderboard  import Leaderboard
 from .namespace    import Namespace
 from .queue        import Queue
@@ -683,6 +684,16 @@ class LSMTree:
         for k in self.scan_keys(end=key):
             result = k
         return result
+
+    def timeseries(self, name: str) -> 'TimeSeries':
+        """Return a persistent TimeSeries store for time-stamped float values.
+
+        Example:
+            cpu = db.timeseries('cpu_usage')
+            cpu.add(85.0)                           # current time
+            cpu.average(time.time() - 60, time.time())  # avg last minute
+        """
+        return TimeSeries(self, name)
 
     def index(self, name: str) -> 'Index':
         """Return a persistent full-text search Index.
