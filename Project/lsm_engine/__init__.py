@@ -1,6 +1,7 @@
 from .lsm_tree    import LSMTree, ReadOnlyError
 from .block_cache  import BlockCache
 from .bloom_filter import BloomFilter
+from .counter      import Counter
 from .cursor       import Cursor
 from .pipeline     import Pipeline
 from .snapshot     import Snapshot
@@ -10,7 +11,7 @@ from .ttl          import encode as ttl_encode, decode as ttl_decode, is_expired
 from .write_batch  import WriteBatch
 from .metrics      import EngineMetrics, LatencyTracker
 
-__all__ = ['LSMTree', 'ReadOnlyError', 'BlockCache', 'BloomFilter', 'Cursor', 'Pipeline',
+__all__ = ['LSMTree', 'ReadOnlyError', 'BlockCache', 'BloomFilter', 'Counter', 'Cursor', 'Pipeline',
            'LatencyTracker', 'Snapshot', 'SkipList',
            'WriteBatch', 'EngineMetrics',
            'ttl_encode', 'ttl_decode', 'ttl_is_expired']
