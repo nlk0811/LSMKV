@@ -3,6 +3,7 @@ from .block_cache  import BlockCache
 from .bloom_filter import BloomFilter
 from .counter      import Counter
 from .cursor       import Cursor
+from .namespace    import Namespace
 from .pipeline     import Pipeline
 from .snapshot     import Snapshot
 from .transaction  import Transaction
