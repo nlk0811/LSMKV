@@ -607,6 +607,27 @@ class LSMTree:
         self.write(batch)
         return True
 
+    def bulk_expire(self, prefix: str, ttl_seconds: float) -> int:
+        """Set a TTL on every key starting with prefix.  Returns count updated.
+
+        More efficient than calling expire() per key: batches writes into
+        groups of 1000, so the WAL is fsynced at most ceil(n/1000) times.
+
+        Example — expire all sessions for a deactivated user:
+            db.bulk_expire('session:user_42:', ttl_seconds=0)  # expire immediately
+            db.bulk_expire('temp:', ttl_seconds=300)           # expire in 5 min
+        """
+        self._check_writable()
+        count = 0
+        pipe  = self.pipeline()
+        for key, val in self.prefix_scan(prefix):
+            pipe.put(key, val, ttl_seconds=ttl_seconds)
+            count += 1
+            if len(pipe) >= 1000:
+                pipe.execute()
+        pipe.execute()   # flush any remainder
+        return count
+
     def range_delete(self, start=None, end=None) -> int:
         """Delete all keys in [start, end) atomically.  Returns count deleted.
 
