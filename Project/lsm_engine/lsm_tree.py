@@ -2079,6 +2079,29 @@ class LSMTree:
         if dst_level > 0:
             self._sort_level_after_compaction(dst_level)
 
+    def compact_level(self, level_idx: int) -> dict:
+        """Trigger and wait for compaction of level_idx → level_idx+1.
+
+        More targeted than compact_all() when you know a specific level is
+        bloated (e.g. after a large batch import that filled L0 or L1).
+
+        Returns {'level': int, 'compactions_run': int, 'elapsed_seconds': float}.
+
+        Raises ValueError if level_idx is out of range (0 … MAX_LEVELS-2).
+        """
+        if not (0 <= level_idx < MAX_LEVELS - 1):
+            raise ValueError(
+                f'level_idx must be 0..{MAX_LEVELS - 2}, got {level_idx}')
+        t0     = time.monotonic()
+        before = self.metrics.snapshot()['compactions']
+        self._submit_compaction(level_idx)
+        self.wait_for_compaction()
+        return {
+            'level':            level_idx,
+            'compactions_run':  self.metrics.snapshot()['compactions'] - before,
+            'elapsed_seconds':  round(time.monotonic() - t0, 2),
+        }
+
     def compact_range(self, start=None, end=None):
         """Force a synchronous compaction of keys in [start, end) across all levels.
 
