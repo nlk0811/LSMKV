@@ -1,6 +1,6 @@
 # LSMKV
 
-[![Python Tests](https://img.shields.io/badge/python%20tests-542%2F542%20passing-brightgreen)](#testing)
+[![Python Tests](https://img.shields.io/badge/python%20tests-556%2F556%20passing-brightgreen)](#testing)
 [![C++ Tests](https://img.shields.io/badge/c%2B%2B%20tests-43%2F43%20passing-brightgreen)](#testing)
 [![Crash Recovery](https://img.shields.io/badge/crash%20recovery-5%2F5%20PASS-brightgreen)](#crash-recovery)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](#license)
