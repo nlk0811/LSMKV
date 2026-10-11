@@ -41,6 +41,7 @@ from .block_cache  import BlockCache
 from .bloom_filter import BloomFilter
 from .compaction   import compact
 from .counter      import Counter
+from .namespace    import Namespace
 from .cursor       import Cursor
 from .manifest     import Manifest, MAX_LEVELS
 from .pipeline     import Pipeline
@@ -679,6 +680,22 @@ class LSMTree:
         for k in self.scan_keys(end=key):
             result = k
         return result
+
+    def namespace(self, prefix: str) -> 'Namespace':
+        """Return a Namespace (prefix-scoped view) of this database.
+
+        All operations on the namespace transparently prepend prefix to keys.
+        Useful for multi-tenant isolation, logical partitioning, and testing.
+
+        Example:
+            users = db.namespace('user:')
+            users.put('alice', data)   # stored as 'user:alice'
+            users.get('alice')         # returns data
+            for uid, data in users.scan():
+                process(uid, data)     # uid is 'alice', not 'user:alice'
+            users.clear()              # deletes all 'user:*' keys
+        """
+        return Namespace(self, prefix)
 
     def counter(self, key: str) -> Counter:
         """Return a persistent Counter backed by key.
