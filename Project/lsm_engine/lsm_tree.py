@@ -41,6 +41,7 @@ from .block_cache  import BlockCache
 from .bloom_filter import BloomFilter
 from .compaction   import compact
 from .counter      import Counter
+from .leaderboard  import Leaderboard
 from .namespace    import Namespace
 from .queue        import Queue
 from .cursor       import Cursor
@@ -681,6 +682,21 @@ class LSMTree:
         for k in self.scan_keys(end=key):
             result = k
         return result
+
+    def leaderboard(self, name: str) -> 'Leaderboard':
+        """Return a persistent Leaderboard (sorted set by score).
+
+        Maintains members sorted by integer score.  Efficient top-N and
+        rank queries backed by lexicographically sorted rank keys.
+
+        Example:
+            lb = db.leaderboard('game_scores')
+            lb.add('alice', 1500)
+            lb.add('bob',   2300)
+            lb.top(2)          # [('bob', 2300), ('alice', 1500)]
+            lb.rank('alice')   # 2
+        """
+        return Leaderboard(self, name)
 
     def queue(self, name: str) -> 'Queue':
         """Return a persistent FIFO Queue backed by a named set of keys.
