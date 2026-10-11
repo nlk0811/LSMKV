@@ -1172,6 +1172,22 @@ class LSMTree:
             self.put(key, new_val, ttl_seconds=ttl_seconds)
         return new_val
 
+    def scan_with_ttl(self,
+                      start=None,
+                      end=None) -> Iterator[Tuple[str, str, Optional[float]]]:
+        """Yield (key, value, ttl_remaining_seconds) for each live entry.
+
+        ttl_remaining is None if the key has no TTL; negative if the key's TTL
+        expired but the entry hasn't yet been purged by compaction.
+
+        Example — find sessions expiring within 5 minutes:
+            for key, val, ttl in db.scan_with_ttl('session:'):
+                if ttl is not None and ttl < 300:
+                    db.touch(key, ttl_seconds=3600)
+        """
+        for key, val in self.scan(start, end):
+            yield key, val, self.ttl_remaining(key)
+
     def filter_scan(self, filter_fn, start=None, end=None
                     ) -> Iterator[Tuple[str, str]]:
         """Scan and yield only (key, value) pairs that satisfy filter_fn.
