@@ -35,6 +35,30 @@ Discards on exception.  Chainable: `db.pipeline().put(k1,v1).put(k2,v2).execute(
 - `db.persist(key)` — remove TTL from key (make permanent).
   Completes the Redis-compatible TTL API alongside put/touch/ttl_remaining.
 
+## Iteration 53 — Graph — persistent directed graph
+**Added:** `db.graph(name)` → `Graph` with:
+- `add_edge(src, dst, weight=None)`, `remove_edge`, `has_edge`, `weight`
+- `neighbors(node)`, `predecessors(node)`, `degree`, `in_degree`
+- `edges_from(node)`, `set_weight`, `remove_node`, `node_count`, `edge_count`
+- `contains` protocol: `('alice','bob') in graph`
+- Two index entries per edge (outgoing + incoming) for O(log n) lookup
+
+## Iteration 52 — TimeSeries — persistent time-series store
+**Added:** `db.timeseries(name)` → `TimeSeries` with:
+- `add(value, timestamp)`, `range(start, end)`, `latest(n)`, `first()`
+- `average`, `sum`, `minimum`, `maximum`, `count`, `delete_before`, `clear`
+- Keys: `__ts:{name}:{timestamp_µs:020d}` for natural sort order
+
+## Iteration 51 — Index — persistent full-text search index
+**Added:** `db.index(name)` → `Index` with inverted index for text search:
+- `add(doc_id, text, **fields)`, `remove`, `update`, `search(query, top_n)`, `get`, `count`, `clear`
+- Tokenization: lower-case, stop-word filtering, extra field support
+
+## Iteration 50 — Leaderboard — persistent sorted set by score
+**Added:** `db.leaderboard(name)` → `Leaderboard`:
+- `add(member, score)`, `remove`, `update(member, delta)`, `score`, `rank`, `top(n)`, `bottom(n)`, `count`, `clear`
+- Keys encode inverted score for descending lexicographic scan order
+
 ## Iteration 35 — mset() + mget() + rename()
 **Added:**
 - `db.mset(mapping, ttl_seconds=0)` — bulk set via one WriteBatch, one WAL fsync.
