@@ -113,13 +113,18 @@ class Snapshot:
                 if fk and lk:
                     if (eb and fk >= eb) or (sb and lk < sb):
                         continue
-                # Template optimisation: borrow index + Bloom from cached reader.
-                # Only opens a new fd (no 3-seek metadata reload).
-                scan_rdr = SSTableReader(path,
-                                         block_cache=self._db._block_cache,
-                                         _template=cached)
-                scan_readers.append(scan_rdr)
-                sources.append(scan_rdr.scan(sb, eb))
+                # Acquire the scan fd semaphore so concurrent snapshot scans
+                # don't exhaust the OS file-descriptor limit (same cap as
+                # LSMTree.scan() at MAX_SCAN_FDS = 64).
+                self._db._scan_sem.acquire()
+                try:
+                    scan_rdr = SSTableReader(path,
+                                             block_cache=self._db._block_cache,
+                                             _template=cached)
+                    scan_readers.append(scan_rdr)
+                    sources.append(scan_rdr.scan(sb, eb))
+                except Exception:
+                    self._db._scan_sem.release()
 
         try:
             heap: list = []
@@ -153,6 +158,7 @@ class Snapshot:
                     rdr.close()
                 except Exception:
                     pass
+                self._db._scan_sem.release()   # one release per acquired slot
 
     def prefix_scan(self, prefix) -> Iterator[Tuple[str, str]]:
         """Yield all snapshot entries whose key starts with prefix."""
