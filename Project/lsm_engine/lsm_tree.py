@@ -1539,6 +1539,29 @@ class LSMTree:
         for key, val in self.scan(start, end):
             yield key, val, self.ttl_remaining(key)
 
+    def sample(self, n: int, start=None, end=None) -> List[Tuple[str, str]]:
+        """Return a random sample of up to n (key, value) pairs (reservoir sampling).
+
+        O(total_keys_in_range) time and O(n) memory.  Each entry has equal
+        probability of appearing in the sample.
+
+        Example:
+            # Random audit of 100 orders
+            sample = db.sample(100, 'order:', 'order;')
+            for key, val in sample:
+                audit(key, val)
+        """
+        import random
+        reservoir: List[Tuple[str, str]] = []
+        for i, kv in enumerate(self.scan(start, end)):
+            if i < n:
+                reservoir.append(kv)
+            else:
+                j = random.randint(0, i)
+                if j < n:
+                    reservoir[j] = kv
+        return reservoir
+
     def filter_scan(self, filter_fn, start=None, end=None
                     ) -> Iterator[Tuple[str, str]]:
         """Scan and yield only (key, value) pairs that satisfy filter_fn.
