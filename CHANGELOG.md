@@ -5,6 +5,18 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 63 — scan/scan_keys/keys/values/items limit= + db.tail()
+**Scaling fix:**
+- Added `limit=` parameter to `scan()`, `scan_keys()`, `keys()`, `values()`,
+  and `items()`.  Without this, a caller doing `list(db.scan())` on a multi-
+  million-key DB pulled everything into memory; with `limit=N` the generator
+  stops after N entries, enabling safe cursor-based pagination.
+- `db.tail(n, end=None)` — return the last n (key, value) pairs in ascending
+  order.  Uses a `deque(maxlen=n)` so memory is O(n) regardless of DB size.
+- 21 new tests (tests/test_scan_limit_tail.py) — 874 total.
+
+---
+
 ## Iteration 62 — Atomic copy(), swap(), key_type()
 **Added:**
 - `db.copy(src, dst, ttl_seconds=0)` — copy a key's value to another key.

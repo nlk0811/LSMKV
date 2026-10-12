@@ -1183,9 +1183,21 @@ class LSMTree:
 
     def scan(self,
              start = None,
-             end   = None) -> Iterator[Tuple[str, str]]:
+             end   = None,
+             limit: Optional[int] = None) -> Iterator[Tuple[str, str]]:
         """Range scan yielding (key, value), tombstones excluded.
+
         Caps open SSTable fds at MAX_SCAN_FDS via a semaphore.
+
+        limit — stop after yielding this many entries.  None means unlimited.
+                Use limit= for safe pagination; without it a full-table scan
+                on a large DB can exhaust memory if collected into a list.
+
+        Example:
+            # page 1
+            pairs = list(db.scan('user:', 'user;', limit=50))
+            # page 2 (resume after last key from previous page)
+            pairs = list(db.scan(pairs[-1][0] + '\\x00', 'user;', limit=50))
         """
         self.metrics.inc(scans=1)
         sb = _b(start) if start else None
@@ -1253,6 +1265,8 @@ class LSMTree:
                 val, exp = _ttl_decode(e.val)
                 if _ttl_expired(exp):
                     continue
+                if limit is not None and entries >= limit:
+                    break
                 entries += 1
                 yield _s(e.key), _s(val)
         finally:
@@ -1275,9 +1289,10 @@ class LSMTree:
 
     def scan_keys(self,
                   start = None,
-                  end   = None) -> Iterator[str]:
+                  end   = None,
+                  limit: Optional[int] = None) -> Iterator[str]:
         """Like scan() but yields only keys — no value fetch overhead."""
-        for key, _ in self.scan(start, end):
+        for key, _ in self.scan(start, end, limit=limit):
             yield key
 
     def get_many(self, keys) -> Dict[str, Optional[str]]:
@@ -1376,33 +1391,55 @@ class LSMTree:
             'elapsed_seconds':   round(time.monotonic() - t0, 2),
         }
 
-    def keys(self, start=None, end=None) -> Iterator[str]:
+    def keys(self, start=None, end=None, limit: Optional[int] = None) -> Iterator[str]:
         """Yield all live keys — alias for scan_keys().
 
         Provides a dict-compatible interface:
-            list(db.keys())          # all keys
-            list(db.keys('u:', 'v')) # keys in range
+            list(db.keys())                    # all keys
+            list(db.keys('u:', 'v'))           # keys in range
+            list(db.keys(limit=100))           # first 100 keys
         """
-        return self.scan_keys(start, end)
+        return self.scan_keys(start, end, limit=limit)
 
-    def values(self, start=None, end=None) -> Iterator[str]:
+    def values(self, start=None, end=None, limit: Optional[int] = None) -> Iterator[str]:
         """Yield all live values in key-sorted order.
 
         Example:
-            for value in db.values('user:', 'user;'):
+            for value in db.values('user:', 'user;', limit=50):
                 process(value)
         """
-        for _, val in self.scan(start, end):
+        for _, val in self.scan(start, end, limit=limit):
             yield val
 
-    def items(self, start=None, end=None) -> Iterator:
+    def items(self, start=None, end=None, limit: Optional[int] = None) -> Iterator:
         """Yield (key, value) pairs — alias for scan().
 
         Provides a dict-compatible interface:
-            for key, val in db.items('order:', 'order;'):
+            for key, val in db.items('order:', 'order;', limit=20):
                 ...
         """
-        return self.scan(start, end)
+        return self.scan(start, end, limit=limit)
+
+    def tail(self, n: int, end: Optional[str] = None) -> List[Tuple[str, str]]:
+        """Return the last n (key, value) pairs, in ascending key order.
+
+        Uses a maxlen-n deque so memory is O(n) regardless of how many keys
+        are in the DB.  Useful for "latest N events" or "most recent N records"
+        patterns where you do not know the start key.
+
+        end — exclusive upper bound for the scan (same semantics as scan(end=)).
+
+        Example:
+            last10 = db.tail(10)
+            last10_events = db.tail(10, end='event;')
+        """
+        if n <= 0:
+            return []
+        import collections as _col
+        buf: _col.deque = _col.deque(maxlen=n)
+        for pair in self.scan(end=end):
+            buf.append(pair)
+        return list(buf)
 
     def get_or_compute_once(self, key, fn, ttl_seconds: float = 0,
                             timeout: float = 60):
