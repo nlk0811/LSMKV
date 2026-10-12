@@ -1827,6 +1827,58 @@ class LSMTree:
             self.write(batch)
         return n
 
+    def scaling_report(self) -> str:
+        """Generate a comprehensive scaling analysis report.
+
+        Shows storage efficiency, read-path metrics, write-path metrics,
+        and per-level compaction stats — all the numbers needed to diagnose
+        performance and tune the engine.
+        """
+        s     = self.stats()
+        disk  = self.size_on_disk()
+        lines = [
+            '┌─ LSMKV Scaling Report ──────────────────────────────────┐',
+            f'│ uptime: {s.get("uptime_seconds", 0):.1f}s',
+            '│',
+            '│ ── Storage ───────────────────────────────────────────── │',
+        ]
+        for lvl, info in s.get('levels', {}).items():
+            sorted_flag = '✓' if int(lvl[1:]) in self._sorted_levels else ' '
+            lines.append(f'│  {lvl} [{sorted_flag}]: {info["files"]} files  '
+                         f'{info["bytes"]//1024:,}KB')
+        lines += [
+            f'│  Total on disk:  {disk//1024//1024:.2f}MB',
+            f'│  Memtable:       {s["memtable_bytes"]//1024:,}KB  '
+                f'({s["memtable_keys"]:,} keys)',
+        ]
+        if s.get('write_amplification'):
+            lines.append(f'│  Write amp:      {s["write_amplification"]:.2f}×')
+        if s.get('bytes_compacted_by_level'):
+            lvl_bytes = ', '.join(
+                f'L{l}={b//1024//1024:.1f}MB'
+                for l, b in sorted(s['bytes_compacted_by_level'].items()))
+            lines.append(f'│  Compacted/lvl:  {lvl_bytes}')
+        lines += [
+            '│',
+            '│ ── Read path ─────────────────────────────────────────── │',
+            f'│  Cache hit rate: {s.get("block_cache_hit_rate", 0):.1%}'
+                f'  ({s.get("block_cache_hits", 0):,} hits)',
+            f'│  Range skips:    {s.get("range_skips", 0):,}',
+            f'│  SSTable reads:  {s.get("sstable_reads", 0):,}',
+            f'│  get p50/p99:    {s.get("get_p50_us", 0):.1f}µs / '
+                f'{s.get("get_p99_us", 0):.1f}µs',
+            f'│  get hit rate:   {s.get("get_hit_rate", 0):.1%}',
+            '│',
+            '│ ── Write path ─────────────────────────────────────────── │',
+            f'│  put p50/p99:    {s.get("put_p50_us", 0):.1f}µs / '
+                f'{s.get("put_p99_us", 0):.1f}µs',
+            f'│  Flushes:        {s.get("flushes", 0)}  '
+                f'Compactions: {s.get("compactions", 0)}',
+            f'│  WAL:            {s.get("wal_bytes", 0)//1024:,}KB',
+            '└─────────────────────────────────────────────────────────┘',
+        ]
+        return '\n'.join(lines)
+
     def stats_report(self) -> str:
         """Return a formatted multi-line string summarising engine state.
 
