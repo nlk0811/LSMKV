@@ -233,6 +233,36 @@ snap = db.metrics.snapshot()
 
 ---
 
+
+---
+
+## Built-in Data Structures
+
+LSMKV ships 20+ high-level data structures built on top of the core engine.
+Each is a factory method on `LSMTree`:
+
+| Factory | Class | What it stores | Key use cases |
+|---|---|---|---|
+| `db.counter(name)` | `Counter` | Persistent integer | Page views, event counts |
+| `db.bitmap(name)` | `Bitmap` | Boolean flags (1 bit/flag) | Seen flags, feature toggles |
+| `db.collection(name)` | `Collection` | Unique string members | Tags, categories |
+| `db.multimap(name)` | `MultiMap` | Key → multiple values | Inverted indexes, adjacency |
+| `db.trie(name)` | `Trie` | Words with prefix search | Autocomplete, spell-check |
+| `db.queue(name)` | `Queue` | FIFO string queue | Job queues, message buffers |
+| `db.priority_queue(name)` | `PriorityQueue` | Priority-ordered items | Task scheduling |
+| `db.leaderboard(name)` | `Leaderboard` | Members sorted by score | Rankings, high scores |
+| `db.timeseries(name)` | `TimeSeries` | (timestamp, float) pairs | Metrics, sensor data |
+| `db.graph(name)` | `Graph` | Directed edges ± weights | Social graphs, deps |
+| `db.index(name)` | `Index` | Full-text search index | Article search |
+| `db.hyperloglog(name)` | `HyperLogLog` | ~Unique count (±4.6%) | Unique visitors |
+| `db.namespace(name)` | `Namespace` | Prefix-scoped view | Multi-tenancy |
+| `db.collection(name)` | `Collection` | Set operations | Union, intersection |
+| `db.pipeline()` | `Pipeline` | Buffered writes | Bulk insert, one fsync |
+| `db.transaction()` | `Transaction` | Optimistic OCC | Multi-key atomic update |
+| `db.lock(key, owner)` | — | Distributed lock | Leader election |
+| `db.rate_limit(key, n, t)` | — | Fixed-window limiter | API throttling |
+| `db.snapshot()` | `Snapshot` | Point-in-time view | Backups, analytics |
+
 ## Architecture
 
 ```
