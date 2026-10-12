@@ -42,6 +42,7 @@ from .bloom_filter import BloomFilter
 from .compaction   import compact
 from .counter      import Counter
 from .bitmap       import Bitmap
+from .hyperloglog  import HyperLogLog
 from .graph        import Graph
 from .index        import Index
 from .timeseries   import TimeSeries
@@ -696,6 +697,16 @@ class LSMTree:
             cpu.average(time.time() - 60, time.time())  # avg last minute
         """
         return TimeSeries(self, name)
+
+    def hyperloglog(self, name: str) -> 'HyperLogLog':
+        """Return a HyperLogLog for approximate cardinality estimation (~1.6% error).
+
+        Example:
+            hll = db.hyperloglog('unique_visitors')
+            hll.add(ip_address)
+            print(hll.count())   # ≈ unique IPs seen
+        """
+        return HyperLogLog(self, name)
 
     def bitmap(self, name: str) -> 'Bitmap':
         """Return a persistent Bitmap for space-efficient boolean flags.
