@@ -5,6 +5,20 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 65 — delete_many() / mdel() + exists_many() bulk operations
+**Scaling fix:**
+- `delete_many(keys)` / `mdel(keys)` — batch-delete N keys in one atomic WAL
+  fsync via WriteBatch.  N individual delete() calls = N WAL records + N
+  group-commit cycles; delete_many() = 1 WAL record for all N tombstones.
+- `exists_many(keys)` — check presence of N keys in one call; each key goes
+  through the Bloom filter pre-check which avoids most SSTable disk reads for
+  absent keys.
+- Complements the existing mset() to give a symmetric batch API:
+  mset / mget / mdel / exists_many.
+- 16 new tests (tests/test_delete_many_exists_many.py) — 908 total.
+
+---
+
 ## Iteration 64 — Parallel get_many() / mget() via workers= parameter
 **Scaling fix:**
 - `get_many(keys, workers=N)` and `mget(keys, workers=N)` now accept a

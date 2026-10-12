@@ -599,6 +599,49 @@ class LSMTree:
         """
         return self.get_many(keys, workers=workers)
 
+    def delete_many(self, keys) -> int:
+        """Delete multiple keys in one atomic WAL fsync.
+
+        Convenience wrapper over write(WriteBatch) for bulk deletes.  All
+        deletions are staged as tombstones in a single WriteBatch, so the WAL
+        sees one record instead of N.  This is significantly more efficient
+        than looping over delete() for large key sets.
+
+        Returns the number of keys that were submitted (including keys that do
+        not currently exist — tombstones are idempotent).
+
+        Example:
+            expired = list(db.scan_keys('sess:', 'sess;'))
+            db.delete_many(expired)          # purge all sessions in one fsync
+        """
+        self._check_writable()
+        keys = list(keys)
+        if not keys:
+            return 0
+        batch = WriteBatch()
+        for k in keys:
+            batch.delete(k)
+        self.write(batch)
+        return len(keys)
+
+    def mdel(self, keys) -> int:
+        """Alias for delete_many()."""
+        return self.delete_many(keys)
+
+    def exists_many(self, keys) -> Dict[str, bool]:
+        """Check existence of multiple keys in one call.
+
+        Returns a dict mapping each requested key to True (present) or False
+        (absent, deleted, or TTL-expired).  Uses has() internally — each
+        key benefits from the Bloom filter pre-check which avoids most disk
+        reads for absent keys.
+
+        Example:
+            flags = db.exists_many(['user:1', 'user:2', 'gone'])
+            # {'user:1': True, 'user:2': True, 'gone': False}
+        """
+        return {k: self.has(k) for k in keys}
+
     def rename(self, old_key, new_key) -> bool:
         """Rename a key: copy its value to new_key and delete old_key.
 
