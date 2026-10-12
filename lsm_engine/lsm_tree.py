@@ -590,14 +590,14 @@ class LSMTree:
         if len(batch) > 0:
             self.write(batch)
 
-    def mget(self, keys) -> Dict[str, Optional[str]]:
+    def mget(self, keys, *, workers: int = 1) -> Dict[str, Optional[str]]:
         """Get multiple keys at once.  Alias for get_many().
 
         Example:
             results = db.mget(['user:1', 'user:2', 'missing'])
             # {'user:1': 'Alice', 'user:2': 'Bob', 'missing': None}
         """
-        return self.get_many(keys)
+        return self.get_many(keys, workers=workers)
 
     def rename(self, old_key, new_key) -> bool:
         """Rename a key: copy its value to new_key and delete old_key.
@@ -1295,17 +1295,35 @@ class LSMTree:
         for key, _ in self.scan(start, end, limit=limit):
             yield key
 
-    def get_many(self, keys) -> Dict[str, Optional[str]]:
+    def get_many(self, keys, *, workers: int = 1) -> Dict[str, Optional[str]]:
         """Retrieve multiple keys in one call.
 
         Returns a dict mapping each requested key to its value (str) or None
         if the key is absent, deleted, or TTL-expired.
 
+        workers — number of parallel reader threads.  Defaults to 1 (serial).
+                  Set workers=4 or higher when keys are mostly in SSTables
+                  and the block cache is cold; SSTable reads use os.pread()
+                  which is safe for concurrent access on the same fd.
+                  Serial mode is faster for small batches or hot-cache workloads
+                  because thread overhead dominates.
+
         Example:
-            results = db.get_many(['user:1', 'user:2', 'user:3'])
-            # {'user:1': 'Alice', 'user:2': None, 'user:3': 'Carol'}
+            # serial (small batch / hot cache)
+            results = db.get_many(['user:1', 'user:2'])
+
+            # parallel (large batch, cold cache)
+            results = db.get_many(user_ids, workers=8)
         """
-        return {k: self.get(k) for k in keys}
+        keys = list(keys)
+        if not keys:
+            return {}
+        if workers <= 1 or len(keys) <= workers:
+            return {k: self.get(k) for k in keys}
+        import concurrent.futures as _cf
+        with _cf.ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {k: pool.submit(self.get, k) for k in keys}
+        return {k: f.result() for k, f in futs.items()}
 
     def backup(self, backup_dir: str) -> dict:
         """Create a consistent hot backup of all flushed SSTables.

@@ -5,6 +5,19 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 64 — Parallel get_many() / mget() via workers= parameter
+**Scaling fix:**
+- `get_many(keys, workers=N)` and `mget(keys, workers=N)` now accept a
+  `workers=` keyword arg.  With `workers=1` (default) behaviour is unchanged.
+  With `workers>1` reads are dispatched to a `ThreadPoolExecutor` — beneficial
+  for large batches of cold (not block-cached) SSTable keys because os.pread()
+  is safe for concurrent access on the same fd.
+- Serial mode is the default to avoid thread overhead on small or hot-cache
+  batches.  Callers opt in explicitly with `workers=4` or `workers=8`.
+- 18 new tests (tests/test_get_many_parallel.py) — 892 total.
+
+---
+
 ## Iteration 63 — scan/scan_keys/keys/values/items limit= + db.tail()
 **Scaling fix:**
 - Added `limit=` parameter to `scan()`, `scan_keys()`, `keys()`, `values()`,
