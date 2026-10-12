@@ -5,6 +5,19 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 66 — Memory-bounded prefix_delete()
+**Scaling fix:**
+- `prefix_delete(prefix, batch_size=500)` — delete all keys matching a prefix
+  in O(batch_size) memory.  The naive approach (`list(scan_keys(prefix)) +
+  delete_many()`) loads every matching key into memory at once; prefix_delete()
+  scans and deletes in pages, advancing a cursor after each batch.
+  For a prefix with 1M keys at 20 bytes each, this cuts peak memory from ~20 MB
+  to 500 * 20 B ≈ 10 KB.
+- Returns total tombstones written.  Idempotent on already-deleted prefixes.
+- 14 new tests (tests/test_prefix_delete.py) — 922 total.
+
+---
+
 ## Iteration 65 — delete_many() / mdel() + exists_many() bulk operations
 **Scaling fix:**
 - `delete_many(keys)` / `mdel(keys)` — batch-delete N keys in one atomic WAL

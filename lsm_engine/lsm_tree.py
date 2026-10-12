@@ -1330,6 +1330,42 @@ class LSMTree:
             _s(end) if end else None,
         )
 
+    def prefix_delete(self, prefix: str, batch_size: int = 500) -> int:
+        """Delete all keys whose key starts with prefix.
+
+        Internally scans and deletes in pages of `batch_size` keys so that
+        memory usage is O(batch_size) regardless of how many keys match the
+        prefix.  This is significantly more memory-efficient than:
+
+            db.delete_many(list(db.scan_keys(prefix, end)))
+
+        which loads all matching keys into a list before writing any tombstones.
+
+        Returns the total number of tombstones written (keys found and deleted).
+
+        Example:
+            # purge all session tokens without loading 100K strings at once
+            db.prefix_delete('session:', batch_size=1000)
+        """
+        self._check_writable()
+        pb        = _b(prefix)
+        end_bytes = _prefix_end(pb)
+        end_s     = _s(end_bytes) if end_bytes else None
+        cursor    = prefix
+        total     = 0
+        while True:
+            batch = list(self.scan_keys(cursor, end_s, limit=batch_size))
+            if not batch:
+                break
+            self.delete_many(batch)
+            total += len(batch)
+            if len(batch) < batch_size:
+                break
+            # Advance cursor past the last key in this batch so the next
+            # scan_keys() call does not re-visit already-deleted keys.
+            cursor = batch[-1] + '\x00'
+        return total
+
     def scan_keys(self,
                   start = None,
                   end   = None,
