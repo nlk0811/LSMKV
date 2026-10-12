@@ -5,6 +5,7 @@ from .counter      import Counter
 from .cursor       import Cursor
 from .bitmap       import Bitmap
 from .collection   import Collection
+from .priority_queue import PriorityQueue
 from .hyperloglog  import HyperLogLog
 from .graph        import Graph
 from .index        import Index
