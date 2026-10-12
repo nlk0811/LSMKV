@@ -44,6 +44,7 @@ from .counter      import Counter
 from .bitmap       import Bitmap
 from .collection   import Collection
 from .priority_queue import PriorityQueue
+from .multimap       import MultiMap
 from .trie           import Trie
 from .hyperloglog  import HyperLogLog
 from .graph        import Graph
@@ -700,6 +701,17 @@ class LSMTree:
             cpu.average(time.time() - 60, time.time())  # avg last minute
         """
         return TimeSeries(self, name)
+
+    def multimap(self, name: str) -> 'MultiMap':
+        """Return a persistent MultiMap (one key → multiple values).
+
+        Example:
+            mm = db.multimap('tags')
+            mm.add('python', 'article:1')
+            mm.add('python', 'article:2')
+            mm.get('python')  # ['article:1', 'article:2']
+        """
+        return MultiMap(self, name)
 
     def trie(self, name: str) -> 'Trie':
         """Return a persistent Trie for prefix search and autocomplete.
