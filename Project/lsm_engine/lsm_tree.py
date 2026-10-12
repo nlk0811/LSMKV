@@ -42,6 +42,7 @@ from .bloom_filter import BloomFilter
 from .compaction   import compact
 from .counter      import Counter
 from .bitmap       import Bitmap
+from .collection   import Collection
 from .hyperloglog  import HyperLogLog
 from .graph        import Graph
 from .index        import Index
@@ -697,6 +698,17 @@ class LSMTree:
             cpu.average(time.time() - 60, time.time())  # avg last minute
         """
         return TimeSeries(self, name)
+
+    def collection(self, name: str) -> 'Collection':
+        """Return a persistent Collection (unordered set of unique members).
+
+        Example:
+            fruits = db.collection('fruits')
+            fruits.add('apple', 'banana')
+            'apple' in fruits   # True
+            fruits.members()    # frozenset({'apple','banana'})
+        """
+        return Collection(self, name)
 
     def hyperloglog(self, name: str) -> 'HyperLogLog':
         """Return a HyperLogLog for approximate cardinality estimation (~1.6% error).
