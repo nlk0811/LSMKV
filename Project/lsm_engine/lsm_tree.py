@@ -43,6 +43,7 @@ from .compaction   import compact
 from .counter      import Counter
 from .bitmap       import Bitmap
 from .collection   import Collection
+from .priority_queue import PriorityQueue
 from .hyperloglog  import HyperLogLog
 from .graph        import Graph
 from .index        import Index
@@ -698,6 +699,17 @@ class LSMTree:
             cpu.average(time.time() - 60, time.time())  # avg last minute
         """
         return TimeSeries(self, name)
+
+    def priority_queue(self, name: str) -> 'PriorityQueue':
+        """Return a persistent PriorityQueue (highest priority popped first).
+
+        Example:
+            pq = db.priority_queue('tasks')
+            pq.push('urgent', priority=10)
+            pq.push('normal', priority=5)
+            pq.pop()  # ('urgent', 10)
+        """
+        return PriorityQueue(self, name)
 
     def collection(self, name: str) -> 'Collection':
         """Return a persistent Collection (unordered set of unique members).
