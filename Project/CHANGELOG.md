@@ -35,6 +35,41 @@ Discards on exception.  Chainable: `db.pipeline().put(k1,v1).put(k2,v2).execute(
 - `db.persist(key)` — remove TTL from key (make permanent).
   Completes the Redis-compatible TTL API alongside put/touch/ttl_remaining.
 
+## Iteration 60 — db.scaling_report()
+**Added:** `db.scaling_report()` — comprehensive performance diagnostic:
+storage per level (with sorted-level indicator), write amplification,
+per-level compaction bytes, read cache hit rate, range skips, get/put p50/p99.
+
+## Iteration 59 — MultiMap — persistent one-to-many map
+**Added:** `db.multimap(name)` → `MultiMap` with `add/remove/remove_all/get/
+contains/count/total_count/get_all_keys/items/as_dict/clear`.
+Length-prefixed key format handles keys and values containing ':'.
+
+## Iteration 58 — Trie — persistent prefix tree for autocomplete
+**Added:** `db.trie(name)` → `Trie` with `insert/delete/search/contains/
+starts_with/count_prefix/count/clear/__iter__/__contains__`.
+Uses LSM-tree's sorted keys for O(|prefix|) range queries — no tree traversal.
+
+## Iteration 57 — PriorityQueue — persistent priority queue
+**Added:** `db.priority_queue(name)` → `PriorityQueue` with `push/pop/peek/
+drain/clear/count/push_many`.  Highest-priority popped first; FIFO within
+same priority via sequence counter.
+
+## Iteration 56 — Collection — persistent unordered set
+**Added:** `db.collection(name)` → `Collection` with `add/remove/discard/pop/
+members/count/clear/union/intersection/difference/symmetric_difference/
+is_subset/is_superset/is_disjoint/add_from/__contains__/__iter__`.
+
+## Iteration 55 — HyperLogLog — approximate cardinality estimation
+**Added:** `db.hyperloglog(name)` → `HyperLogLog` with `add/add_many/count/
+merge/reset`.  M=512 registers, ±~4.6% error, ~640 bytes storage.
+Fixed leading-zeros bug: REST_BITS = 64 - LOG2_M = 55 for M=512.
+
+## Iteration 54 — Bitmap — persistent boolean flags
+**Added:** `db.bitmap(name)` → `Bitmap` with `set/get/clear/toggle/set_range/
+clear_range/count/any_set/iter_set_bits/clear_all`.
+512-byte chunks stored as base64; 1000 bits = 1 database key.
+
 ## Iteration 53 — Graph — persistent directed graph
 **Added:** `db.graph(name)` → `Graph` with:
 - `add_edge(src, dst, weight=None)`, `remove_edge`, `has_edge`, `weight`
