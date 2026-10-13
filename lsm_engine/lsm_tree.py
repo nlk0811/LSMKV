@@ -1988,18 +1988,7 @@ class LSMTree:
         self._check_writable()
         if prefix:
             return self.delete_prefix(prefix)
-        # Delete everything: scan all keys and batch-delete
-        batch = WriteBatch()
-        count = 0
-        for key, _ in self.scan():
-            batch.delete(key)
-            count += 1
-            if len(batch) >= 1000:
-                self.write(batch)
-                batch = WriteBatch()
-        if batch:
-            self.write(batch)
-        return count
+        return self.range_delete(batch_size=500)
 
     def memory_usage(self) -> dict:
         """Estimate current in-memory footprint broken down by component.
@@ -2108,24 +2097,16 @@ class LSMTree:
         """
         return Cursor(self)
 
-    def delete_prefix(self, prefix) -> int:
-        self._check_writable()
-        """Delete all keys starting with prefix.  Returns the number of keys deleted.
+    def delete_prefix(self, prefix, batch_size: int = 500) -> int:
+        """Delete all keys starting with prefix.  Returns count deleted.
 
-        Implemented as a single WriteBatch so all deletes are applied atomically
-        with one WAL fsync.  Scans the prefix range first to collect live keys,
-        then writes tombstones for each.
+        Alias for prefix_delete() — delegates to the memory-bounded chunked
+        implementation so memory usage is O(batch_size) regardless of how
+        many keys match the prefix.
 
-        For large namespaces (millions of keys) this is memory-efficient because
-        the batch is built lazily from the scan iterator.
+        batch_size controls the chunk size passed to prefix_delete().
         """
-        batch = WriteBatch()
-        for key, _ in self.prefix_scan(prefix):
-            batch.delete(key)
-        n = len(batch)
-        if n > 0:
-            self.write(batch)
-        return n
+        return self.prefix_delete(prefix, batch_size=batch_size)
 
     def scaling_report(self) -> str:
         """Generate a comprehensive scaling analysis report.

@@ -5,6 +5,19 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 69 — Fix delete_prefix() OOM bug + simplify clear()
+**Bug fix:**
+- `delete_prefix()` was documented as "memory-efficient" but built a single
+  unbounded WriteBatch for ALL matching keys — same OOM pattern as the old
+  prefix_delete and range_delete.  Fixed by redirecting to the correct chunked
+  `prefix_delete()` (added in iter-66).  `delete_prefix()` now accepts the
+  same `batch_size=500` parameter.
+- `clear()` full-database path simplified: instead of its own manual batching
+  loop, now calls `range_delete(batch_size=500)` which carries the same fix.
+- All 953 existing tests still pass with no change.
+
+---
+
 ## Iteration 68 — Memory-bounded range_delete() batch_size parameter
 **Scaling fix:**
 - `range_delete(start, end, batch_size=500)` — now deletes in O(batch_size)
