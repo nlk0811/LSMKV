@@ -1797,6 +1797,55 @@ class LSMTree:
                 count += 1
                 yield key
 
+    def map_values(self, fn, start=None, end=None,
+                   batch_size: int = 500) -> int:
+        """Transform values in-place by applying fn to each (key, value).
+
+        For each live entry in [start, end):
+          • new_val = fn(key, value)
+          • If new_val is None   → delete the key (tombstone).
+          • If new_val == value  → skip (no write needed).
+          • Otherwise            → put(key, new_val).
+
+        Writes are batched in groups of `batch_size` so the WAL sees at most
+        ceil(changed / batch_size) fsyncs instead of one per changed key.
+        Memory usage is O(batch_size) regardless of range size.
+
+        Returns the count of keys that were changed or deleted.
+
+        Example — add a 'v' field to all JSON user records:
+            import json
+            def add_version(key, val):
+                obj = json.loads(val)
+                obj['v'] = 2
+                return json.dumps(obj)
+            db.map_values(add_version, start='user:', end='user;')
+
+        Example — delete entries where predicate holds:
+            db.map_values(
+                lambda k, v: None if 'inactive' in v else v,
+                start='user:', end='user;',
+            )
+        """
+        self._check_writable()
+        batch   = WriteBatch()
+        changed = 0
+        for key, val in self.scan(start, end):
+            new_val = fn(key, val)
+            if new_val == val:
+                continue
+            if new_val is None:
+                batch.delete(key)
+            else:
+                batch.put(key, str(new_val))
+            changed += 1
+            if len(batch) >= batch_size:
+                self.write(batch)
+                batch = WriteBatch()
+        if len(batch) > 0:
+            self.write(batch)
+        return changed
+
     def scan_with_ttl(self,
                       start=None,
                       end=None) -> Iterator[Tuple[str, str, Optional[float]]]:

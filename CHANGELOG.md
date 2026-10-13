@@ -5,6 +5,20 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 71 — map_values() batched in-place value transformation
+**Scaling fix:**
+- `map_values(fn, start, end, batch_size=500)` — apply a transform function to
+  every value in a range, writing changes in batches.  N individual `put()`
+  calls = N WAL records; map_values(N) with batch_size=500 = ceil(N/500) fsyncs.
+  - Returns `None` from fn → key is deleted.
+  - Returns same value → key is skipped (no write).
+  - Batch writes with WriteBatch; memory is O(batch_size).
+- Enables schema migrations, data normalization, and bulk transformations
+  without requiring N separate WAL records.
+- 16 new tests (tests/test_map_values.py) — 990 total.
+
+---
+
 ## Iteration 70 — scan_filter() + grep() streaming pattern-match API
 **Added:**
 - `scan_filter(fn, start, end, limit)` — yield (key, value) pairs where
