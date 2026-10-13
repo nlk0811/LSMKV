@@ -5,6 +5,20 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 70 — scan_filter() + grep() streaming pattern-match API
+**Added:**
+- `scan_filter(fn, start, end, limit)` — yield (key, value) pairs where
+  `fn(key, value)` returns True.  Streaming (generator) so memory is O(1);
+  without it, filtering requires loading all entries into a list first.
+- `grep(pattern, start, end, limit)` — yield keys matching a regex (str or
+  compiled).  Key-only scan — values are not deserialized, making it faster
+  than scan_filter() for key-pattern searches.
+- Both respect `limit=` for early termination with the same semantics as
+  scan() (check before yield, so limit=0 returns nothing).
+- 21 new tests (tests/test_scan_filter_grep.py) — 974 total.
+
+---
+
 ## Iteration 69 — Fix delete_prefix() OOM bug + simplify clear()
 **Bug fix:**
 - `delete_prefix()` was documented as "memory-efficient" but built a single

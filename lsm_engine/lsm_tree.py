@@ -1738,6 +1738,65 @@ class LSMTree:
             result = k
         return result
 
+    def scan_filter(self, fn, start=None, end=None,
+                    limit: Optional[int] = None) -> Iterator[Tuple[str, str]]:
+        """Yield (key, value) pairs for which fn(key, value) returns True.
+
+        The scan is streaming — only matching entries are held in memory at
+        any point, so this is O(1) memory regardless of range size.  Without
+        this method, callers have to do:
+
+            matches = [(k, v) for k, v in db.scan() if my_pred(k, v)]
+
+        which loads *all* entries into a list first.
+
+        fn     — callable(key: str, value: str) → bool
+        limit  — stop after yielding this many matching entries.
+
+        Example — find all users whose value contains 'inactive':
+            for key, val in db.scan_filter(
+                    lambda k, v: 'inactive' in v, 'user:', 'user;'):
+                db.delete(key)
+        """
+        count = 0
+        for key, val in self.scan(start, end):
+            if fn(key, val):
+                if limit is not None and count >= limit:
+                    break
+                count += 1
+                yield key, val
+
+    def grep(self, pattern, start=None, end=None,
+             limit: Optional[int] = None) -> Iterator[str]:
+        """Yield keys whose name matches a regex pattern.
+
+        Only keys are scanned — values are not deserialized, making this
+        faster than scan_filter() for key-only searches.
+
+        pattern — str (compiled on first call) or a pre-compiled re.Pattern.
+        limit   — stop after yielding this many matching keys.
+
+        Example — find all 'event:' keys with a UUID suffix:
+            import re
+            uuid_pat = re.compile(r'event:[0-9a-f]{8}-')
+            for key in db.grep(uuid_pat, 'event:', 'event;'):
+                process(key)
+
+            # Or with a plain string pattern:
+            for key in db.grep(r'session:[0-9]{4}'):
+                refresh(key)
+        """
+        import re as _re
+        if isinstance(pattern, str):
+            pattern = _re.compile(pattern)
+        count = 0
+        for key in self.scan_keys(start, end):
+            if pattern.search(key):
+                if limit is not None and count >= limit:
+                    break
+                count += 1
+                yield key
+
     def scan_with_ttl(self,
                       start=None,
                       end=None) -> Iterator[Tuple[str, str, Optional[float]]]:
