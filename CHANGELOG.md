@@ -5,6 +5,19 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 67 — rename_many() + touch_many() batch operations
+**Scaling fix:**
+- `rename_many(mapping)` — atomically rename N keys in one WAL fsync.
+  N individual rename() calls = N WriteBatch + N group-commit cycles;
+  rename_many(N) = one WriteBatch with 2N ops, one fsync.
+  Absent source keys are silently skipped.
+- `touch_many(keys, ttl_seconds)` — refresh the TTL of N keys in one fsync.
+  N individual touch() calls = N WAL records; touch_many(N) = 1 fsync.
+  Absent / expired keys are skipped.  Useful for sliding-window session expiry.
+- 17 new tests (tests/test_rename_touch_many.py) — 939 total.
+
+---
+
 ## Iteration 66 — Memory-bounded prefix_delete()
 **Scaling fix:**
 - `prefix_delete(prefix, batch_size=500)` — delete all keys matching a prefix

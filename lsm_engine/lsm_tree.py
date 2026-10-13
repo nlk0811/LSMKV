@@ -666,6 +666,67 @@ class LSMTree:
         self.write(batch)
         return True
 
+    def rename_many(self, mapping: Dict[str, str]) -> int:
+        """Atomically rename multiple keys in one WAL fsync.
+
+        For each (old_key → new_key) in mapping: if old_key exists, its value
+        is written to new_key and old_key is deleted.  If old_key is absent
+        that pair is skipped silently.  All surviving (put + delete) pairs are
+        applied as a single WriteBatch so no intermediate state is observable.
+
+        N individual rename() calls = 2N WAL records, N group-commit cycles.
+        rename_many(N pairs) = 2N ops in 1 WAL fsync.
+
+        Returns count of old keys that existed and were renamed.
+
+        Example:
+            db.rename_many({
+                'draft:post:1': 'published:post:1',
+                'draft:post:2': 'published:post:2',
+            })
+        """
+        self._check_writable()
+        batch   = WriteBatch()
+        renamed = 0
+        for old_key, new_key in mapping.items():
+            val = self.get(old_key)
+            if val is None:
+                continue
+            batch.put(new_key, val)
+            batch.delete(old_key)
+            renamed += 1
+        if renamed > 0:
+            self.write(batch)
+        return renamed
+
+    def touch_many(self, keys, ttl_seconds: float) -> int:
+        """Refresh the TTL of multiple keys atomically in one WAL fsync.
+
+        For each key that currently exists, re-writes it with the new TTL
+        (preserving its current value).  Keys that are absent or already
+        expired are skipped.  All writes are applied as one WriteBatch.
+
+        N individual touch() calls = N WAL records; touch_many(N) = 1 fsync.
+
+        Returns count of keys whose TTL was refreshed.
+
+        Example:
+            active_sessions = [s for s in sessions if was_recently_used(s)]
+            db.touch_many(active_sessions, ttl_seconds=3600)
+        """
+        self._check_writable()
+        batch     = WriteBatch()
+        refreshed = 0
+        for key in keys:
+            val = self.get(key)
+            if val is None:
+                continue
+            batch.put_ttl(key, val, ttl_seconds)
+            refreshed += 1
+        if refreshed > 0:
+            self.write(batch)
+        return refreshed
+
     def bulk_expire(self, prefix: str, ttl_seconds: float) -> int:
         """Set a TTL on every key starting with prefix.  Returns count updated.
 
