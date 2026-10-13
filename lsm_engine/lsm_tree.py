@@ -748,23 +748,43 @@ class LSMTree:
         pipe.execute()   # flush any remainder
         return count
 
-    def range_delete(self, start=None, end=None) -> int:
-        """Delete all keys in [start, end) atomically.  Returns count deleted.
+    def range_delete(self, start=None, end=None,
+                     batch_size: int = 500) -> int:
+        """Delete all keys in [start, end).  Returns count deleted.
 
-        More expressive than delete_prefix() for non-prefix range boundaries.
-        Equivalent to collecting the range via scan() then writing one batch.
+        Keys are deleted in chunks of `batch_size` to bound memory usage to
+        O(batch_size) regardless of range cardinality.  Each chunk is one
+        atomic WriteBatch; if the process crashes between chunks some keys
+        may remain.
+
+        batch_size=0 — legacy mode: one WriteBatch for the entire range.
+                       Atomic but uses O(range_size) memory — only safe for
+                       small ranges.
 
         Example — purge stale log entries:
             deleted = db.range_delete('log:2024-', 'log:2025-')
         """
         self._check_writable()
-        batch = WriteBatch()
-        for key, _ in self.scan(start, end):
-            batch.delete(key)
-        n = len(batch)
-        if n > 0:
-            self.write(batch)
-        return n
+        if batch_size <= 0:
+            batch = WriteBatch()
+            for key, _ in self.scan(start, end):
+                batch.delete(key)
+            n = len(batch)
+            if n > 0:
+                self.write(batch)
+            return n
+        cursor = start
+        total  = 0
+        while True:
+            page = list(self.scan_keys(cursor, end, limit=batch_size))
+            if not page:
+                break
+            self.delete_many(page)
+            total += len(page)
+            if len(page) < batch_size:
+                break
+            cursor = page[-1] + '\x00'
+        return total
 
     def ceiling_key(self, key) -> Optional[str]:
         """Return the smallest key >= key, or None if no such key exists.

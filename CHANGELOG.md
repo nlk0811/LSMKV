@@ -5,6 +5,19 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 68 — Memory-bounded range_delete() batch_size parameter
+**Scaling fix:**
+- `range_delete(start, end, batch_size=500)` — now deletes in O(batch_size)
+  memory instead of loading the entire range into one WriteBatch.
+  Old default was a single WriteBatch for the entire range (OOM risk for large
+  ranges); new default chunks into pages of 500, advancing a cursor after each.
+  `batch_size=0` preserves the original atomic (single-batch) behaviour.
+- Identical fix to prefix_delete() applied in iter-66, now covering arbitrary
+  [start, end) ranges.
+- 14 new tests (tests/test_range_delete_batched.py) — 953 total.
+
+---
+
 ## Iteration 67 — rename_many() + touch_many() batch operations
 **Scaling fix:**
 - `rename_many(mapping)` — atomically rename N keys in one WAL fsync.
