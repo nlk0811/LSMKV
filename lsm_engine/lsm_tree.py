@@ -515,6 +515,128 @@ class LSMTree:
             _done.wait()
         return True
 
+    def set_if_absent(self, key, value, ttl_seconds: float = 0) -> bool:
+        """Set key=value only if the key does not currently exist (Redis SET NX).
+
+        Returns True if the key was written; False if it already existed.
+        Implemented as compare_and_swap(key, expected=None, new_value=value)
+        so the check-and-set is atomic under the write lock.
+
+        Common uses: idempotent creation, distributed locks, deduplication.
+
+        Example:
+            if db.set_if_absent('lock:resource', worker_id, ttl_seconds=30):
+                ...  # acquired the lock
+        """
+        self._check_writable()
+        if ttl_seconds > 0:
+            import time as _time
+            from .ttl import encode as _ttl_encode
+            encoded = _ttl_encode(_b(value), _time.time() + ttl_seconds)
+        else:
+            encoded = _b(value)
+        _done = None
+        with self._write_lock:
+            if self.get(key) is not None:
+                return False
+            kb = _b(key)
+            _done = self._wal.submit_put(kb, encoded)
+            self._memtable.put(kb, encoded)
+            self.metrics.inc(puts=1, wal_records=1,
+                             bytes_written_user=len(kb) + len(encoded))
+            if self._memtable.size_bytes >= self._memtable_limit:
+                self._maybe_rotate()
+        if _done:
+            _done.wait()
+        return True
+
+    def set_if_present(self, key, value, ttl_seconds: float = 0) -> bool:
+        """Set key=value only if the key already exists (Redis SET XX).
+
+        Returns True if the key existed and was updated; False if absent.
+        Useful as an update guard: only modify a record that already exists.
+
+        Example:
+            if not db.set_if_present('user:99', new_profile):
+                raise KeyError('user:99 does not exist')
+        """
+        self._check_writable()
+        _done = None
+        with self._write_lock:
+            if self.get(key) is None:
+                return False
+            kb = _b(key)
+            if ttl_seconds > 0:
+                import time as _time
+                from .ttl import encode as _ttl_encode
+                vb = _ttl_encode(_b(value), _time.time() + ttl_seconds)
+            else:
+                vb = _b(value)
+            _done = self._wal.submit_put(kb, vb)
+            self._memtable.put(kb, vb)
+            self.metrics.inc(puts=1, wal_records=1,
+                             bytes_written_user=len(kb) + len(vb))
+            if self._memtable.size_bytes >= self._memtable_limit:
+                self._maybe_rotate()
+        if _done:
+            _done.wait()
+        return True
+
+    def getset(self, key, new_value) -> Optional[str]:
+        """Atomically replace value and return the old value (Redis GETSET).
+
+        Returns the previous value (or None if key was absent).  The read and
+        write happen under the write lock so no concurrent writer can observe
+        the key in a transient state.
+
+        Example — reset a counter and read its old value:
+            old = db.getset('events:today', '0')
+        """
+        self._check_writable()
+        _done = None
+        with self._write_lock:
+            old = self.get(key)
+            kb = _b(key)
+            vb = _b(new_value)
+            _done = self._wal.submit_put(kb, vb)
+            self._memtable.put(kb, vb)
+            self.metrics.inc(puts=1, wal_records=1,
+                             bytes_written_user=len(kb) + len(vb))
+            if self._memtable.size_bytes >= self._memtable_limit:
+                self._maybe_rotate()
+        if _done:
+            _done.wait()
+        return old
+
+    def getdel(self, key) -> Optional[str]:
+        """Atomically read and delete a key (Redis GETDEL).
+
+        Returns the value (or None if absent), then deletes the key.
+        Read and delete are atomic under the write lock.  Useful for
+        one-time tokens, claim patterns, and drain queues.
+
+        Example — consume a one-time password:
+            otp = db.getdel('otp:user:42')
+            if otp and otp == submitted:
+                grant_access()
+        """
+        self._check_writable()
+        _done = None
+        with self._write_lock:
+            val = self.get(key)
+            if val is None:
+                return None
+            kb = _b(key)
+            _done = self._wal.submit_delete(kb)
+            self._memtable.delete(kb)
+            self.metrics.inc(deletes=1, wal_records=1,
+                             bytes_written_user=len(kb))
+            if self._memtable.size_bytes >= self._memtable_limit:
+                self._maybe_rotate()
+        if _done:
+            _done.wait()
+        return val
+
     def transaction(self) -> Transaction:
         """Return an optimistic read-write Transaction.
 

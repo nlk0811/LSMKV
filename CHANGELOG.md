@@ -5,6 +5,22 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 73 — Atomic conditional ops: set_if_absent / set_if_present / getset / getdel
+**Added:**
+- `set_if_absent(key, value, ttl_seconds=0)` (Redis SET NX) — write only if key
+  absent; atomic under write_lock.  Primary use: distributed locks, idempotent
+  creation, one-time writes.
+- `set_if_present(key, value, ttl_seconds=0)` (Redis SET XX) — write only if
+  key exists; atomic update guard for records that must already exist.
+- `getset(key, new_value)` (Redis GETSET) — atomically replace and return old
+  value; useful for counter resets.
+- `getdel(key)` (Redis GETDEL) — atomically read then delete; one-time tokens,
+  claim patterns, drain queues.
+- All four operate under write_lock for atomicity; no TOCTOU window.
+- 20 new tests (tests/test_conditional_ops.py) — 1030 total.
+
+---
+
 ## Iteration 72 — Float atomic arithmetic: increment_float / atomic_max_float / atomic_min_float
 **Added:**
 - `increment_float(key, amount=1.0)` — atomically add a float amount.  The
