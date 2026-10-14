@@ -5,6 +5,22 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 75 — Namespace forwards all methods added since iter 62
+**Scaling fix:**
+- `Namespace` was missing every method added since iteration 62.  Users of
+  namespaced databases had no access to: bulk ops (mset/mget/delete_many/
+  exists_many), atomic ops (set_if_absent/set_if_present/getset/getdel/
+  compare_and_swap/update/copy/swap/rename/rename_many), TTL ops (expire/
+  expireat/touch/touch_many/ttl_remaining/key_type), numeric ops (increment_
+  float/atomic_max_float/atomic_min_float/atomic_max/atomic_min), and
+  transform/search ops (map_values/scan_filter/grep/prefix_delete/range_delete/
+  tail).
+- All forwarding methods correctly scope keys to the namespace prefix and
+  strip the prefix from returned keys.
+- 25 new tests (tests/test_namespace_new_methods.py) — 1055 total.
+
+---
+
 ## Iteration 74 — Fix scan_with_ttl() double-read per key
 **Scaling fix:**
 - `scan_with_ttl()` previously called `ttl_remaining(key)` for every entry,
