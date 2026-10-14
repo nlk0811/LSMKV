@@ -5,6 +5,21 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 81 — WriteBatch.merge/copy/put_count/delete_count + db.disk_usage()
+**Added:**
+- `WriteBatch.merge(other)` — append another batch's ops (returns self for
+  chaining).  Enables composing independent batch builders and committing them
+  atomically in one WAL fsync.
+- `WriteBatch.copy()` — independent shallow copy.
+- `WriteBatch.put_count`, `delete_count` — count ops by type; `repr()` updated
+  to show counts.
+- `db.disk_usage()` — complete storage breakdown: sstable_bytes, wal_bytes,
+  memtable_bytes, imm_bytes, total_bytes, by_level dict.  More useful than the
+  existing `size_on_disk()` which only counts SSTables.
+- 20 new tests (tests/test_writebatch_merge_disk_usage.py) — 1089 total.
+
+---
+
 ## Iteration 80 — Persistent read pool for get_many(workers>1) + scan_entries metrics fix
 **Scaling fix:**
 - `get_many(workers=N)` previously created a new `ThreadPoolExecutor` on every

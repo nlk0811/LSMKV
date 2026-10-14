@@ -1326,6 +1326,43 @@ class LSMTree:
                 for f in lvl
             )
 
+    def disk_usage(self) -> dict:
+        """Return a detailed breakdown of storage used on disk and in memory.
+
+        Returns a dict with the following keys (all values in bytes):
+          sstable_bytes  — total bytes across all SSTable files.
+          wal_bytes      — current WAL file size (unflushed write log).
+          memtable_bytes — current active memtable estimated flush size.
+          imm_bytes      — immutable memtable (in flight to disk), or 0.
+          total_bytes    — wal_bytes + sstable_bytes + memtable_bytes + imm_bytes.
+          by_level       — {L0: bytes, L1: bytes, ...} per-level SSTable bytes.
+
+        Example:
+            usage = db.disk_usage()
+            print(f\"total: {usage['total_bytes'] / 1_048_576:.1f} MB\")
+            print(f\"  SSTables: {usage['sstable_bytes'] / 1_048_576:.1f} MB\")
+            print(f\"  WAL:      {usage['wal_bytes'] / 1_048_576:.1f} MB\")
+        """
+        with self._lock:
+            levels       = [list(lvl) for lvl in self._manifest.levels]
+            file_sizes   = dict(self._manifest._file_sizes)
+        sstable_bytes = sum(file_sizes.get(f, 0) for lvl in levels for f in lvl)
+        by_level = {
+            f'L{i}': sum(file_sizes.get(f, 0) for f in lvl)
+            for i, lvl in enumerate(levels) if lvl
+        }
+        wal_bytes      = self._wal.size_bytes
+        memtable_bytes = self._memtable.size_bytes
+        imm_bytes      = self._imm.size_bytes if self._imm is not None else 0
+        return {
+            'sstable_bytes':  sstable_bytes,
+            'wal_bytes':      wal_bytes,
+            'memtable_bytes': memtable_bytes,
+            'imm_bytes':      imm_bytes,
+            'total_bytes':    sstable_bytes + wal_bytes + memtable_bytes + imm_bytes,
+            'by_level':       by_level,
+        }
+
     def has(self, key) -> bool:
         """Return True if key exists and has not expired.
 
