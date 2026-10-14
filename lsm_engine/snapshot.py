@@ -187,6 +187,31 @@ class Snapshot:
         """Count live entries in [start, end).  O(n) scan."""
         return sum(1 for _ in self.scan_keys(start, end))
 
+    def count_prefix(self, prefix: str) -> int:
+        """Count entries whose key starts with prefix.  O(n) scan."""
+        from .lsm_tree import _prefix_end, _b, _s
+        pb  = _b(prefix)
+        end = _prefix_end(pb)
+        return self.count(
+            _s(pb)  if pb  else None,
+            _s(end) if end else None,
+        )
+
+    def is_empty(self, start=None, end=None) -> bool:
+        """Return True if no live entries exist in [start, end).  O(1)."""
+        return next(self.scan_keys(start, end, limit=1), None) is None
+
+    def first(self, start=None, end=None):
+        """Return first (key, value) pair in [start, end), or None.  O(log n)."""
+        return next(self.scan(start, end, limit=1), None)
+
+    def last(self, start=None, end=None):
+        """Return last (key, value) pair in [start, end), or None.  O(n)."""
+        result = None
+        for pair in self.scan(start, end):
+            result = pair
+        return result
+
     def scan_filter(self, fn, start=None, end=None,
                     limit=None) -> Iterator[Tuple[str, str]]:
         """Yield (key, value) pairs where fn(key, value) returns True."""

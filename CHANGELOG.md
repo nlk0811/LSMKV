@@ -5,6 +5,17 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 86 — Snapshot.count_prefix/is_empty/first/last
+**Added:**
+- `Snapshot.count_prefix(prefix)`, `is_empty(start, end)`, `first(start, end)`,
+  `last(start, end)` — matching the convenience methods on LSMTree (iter-84)
+  and Namespace (iter-85).
+- All three snapshot-aware classes (LSMTree, Namespace, Snapshot) now have a
+  consistent read API: count/count_prefix, is_empty, first, last, tail.
+- All 16 existing snapshot tests still pass.
+
+---
+
 ## Iteration 85 — Fix read-only pool leak + Namespace.count_prefix/is_empty/first/last
 **Bug fix:**
 - `close()` for read-only databases was missing `_read_pool.shutdown()`.  If a
