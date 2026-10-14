@@ -226,6 +226,13 @@ class LSMTree:
         self._compaction_futures: Dict[int, concurrent.futures.Future] = {}
         self._compaction_fut_lock = threading.Lock()
 
+        # Persistent read pool for get_many(workers>1).  Created lazily and
+        # sized to the largest workers= value ever requested so that repeated
+        # get_many() calls avoid per-call thread creation overhead.
+        self._read_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        self._read_pool_workers: int = 0
+        self._read_pool_lock = threading.Lock()
+
         # Live metrics, accessible via db.metrics or included in db.stats().
         self.metrics = EngineMetrics()
 
@@ -1658,9 +1665,20 @@ class LSMTree:
             return {}
         if workers <= 1 or len(keys) <= workers:
             return {k: self.get(k) for k in keys}
-        import concurrent.futures as _cf
-        with _cf.ThreadPoolExecutor(max_workers=workers) as pool:
-            futs = {k: pool.submit(self.get, k) for k in keys}
+        # Reuse a persistent pool to avoid per-call thread creation overhead.
+        # A new pool is created only when the requested worker count exceeds the
+        # current pool size (the old pool is discarded, new one starts warm).
+        with self._read_pool_lock:
+            if self._read_pool is None or self._read_pool_workers < workers:
+                if self._read_pool is not None:
+                    self._read_pool.shutdown(wait=False)
+                self._read_pool = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=workers,
+                    thread_name_prefix='lsmkv-read',
+                )
+                self._read_pool_workers = workers
+            pool = self._read_pool
+        futs = {k: pool.submit(self.get, k) for k in keys}
         return {k: f.result() for k, f in futs.items()}
 
     def backup(self, backup_dir: str) -> dict:
@@ -2033,8 +2051,13 @@ class LSMTree:
         self.metrics.inc(scans=1)
         sb = _b(start) if start else None
         eb = _b(end)   if end   else None
-        for key_b, val_b, exp in self._heap_scan_raw(sb, eb):
-            yield _s(key_b), _s(val_b), exp
+        entries = 0
+        try:
+            for key_b, val_b, exp in self._heap_scan_raw(sb, eb):
+                entries += 1
+                yield _s(key_b), _s(val_b), exp
+        finally:
+            self.metrics.inc(scan_entries=entries)
 
     def scan_with_ttl(self,
                       start=None,
@@ -2582,6 +2605,9 @@ class LSMTree:
         self._imm_pending.set()
         self._bg.join(timeout=5)
         self._compaction_executor.shutdown(wait=True)
+        if self._read_pool is not None:
+            self._read_pool.shutdown(wait=False)
+            self._read_pool = None
         with self._write_lock:
             if self._imm is not None:
                 self._flush_imm()

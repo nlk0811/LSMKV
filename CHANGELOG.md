@@ -5,6 +5,20 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 80 — Persistent read pool for get_many(workers>1) + scan_entries metrics fix
+**Scaling fix:**
+- `get_many(workers=N)` previously created a new `ThreadPoolExecutor` on every
+  call.  Thread startup costs ~100µs each, so `workers=8` on a hot path added
+  ~800µs overhead per call — a significant fraction of total read latency.
+  Added `_read_pool` (persistent `ThreadPoolExecutor`) that is created once and
+  reused across calls.  Pool is upgraded (recreated) when a larger `workers=`
+  value is requested.  Shut down in `close()`.
+- Also fixed `_scan_expiry()` metrics: `scan_entries` was not incremented for
+  `scan_with_ttl()` calls.  Added `finally: metrics.inc(scan_entries=entries)`.
+- Verified: pool identity stable across repeated calls; upgrades correctly.
+
+---
+
 ## Iteration 79 — Transaction.scan() / scan_keys() / get_many() for atomic range reads
 **Added:**
 - `Transaction.scan(start, end)` — yield (key, value) pairs and record each
