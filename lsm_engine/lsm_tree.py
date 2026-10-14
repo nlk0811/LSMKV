@@ -1305,6 +1305,55 @@ class LSMTree:
         result = self.update(key, _inc)
         return int(result)
 
+    def increment_float(self, key, amount: float = 1.0) -> float:
+        """Atomically add amount (float) to a numeric value.  Returns new value.
+
+        Initialises to 0.0 if the key does not exist.  Accepts any value that
+        str(float(v)) round-trips correctly (integers, decimals, scientific
+        notation).  Useful for monitoring metrics, rates, and monetary values
+        where integer precision is insufficient.
+
+        Example:
+            db.increment_float('avg_latency_ms', 3.14)
+            db.increment_float('balance', -0.50)
+        """
+        self._check_writable()
+        def _incf(v):
+            return repr(float(v or '0') + amount)
+        return float(self.update(key, _incf))
+
+    def atomic_max_float(self, key, value: float) -> float:
+        """Atomically set key = max(current, value).  Returns new value (float).
+
+        Initialises to value if key is absent.  Use for high-water marks that
+        require float precision (peak response time, highest bid, etc.).
+
+        Example:
+            db.atomic_max_float('peak_rps', requests_per_second)
+        """
+        self._check_writable()
+        result = self.update(
+            key,
+            lambda v: repr(max(value, float(v if v is not None else repr(value))))
+        )
+        return float(result)
+
+    def atomic_min_float(self, key, value: float) -> float:
+        """Atomically set key = min(current, value).  Returns new value (float).
+
+        Initialises to value if key is absent.  Use for low-water marks that
+        require float precision (min latency, floor price, etc.).
+
+        Example:
+            db.atomic_min_float('min_latency_ms', elapsed_ms)
+        """
+        self._check_writable()
+        result = self.update(
+            key,
+            lambda v: repr(min(value, float(v if v is not None else repr(value))))
+        )
+        return float(result)
+
     def scan(self,
              start = None,
              end   = None,

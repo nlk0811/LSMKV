@@ -5,6 +5,20 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 72 — Float atomic arithmetic: increment_float / atomic_max_float / atomic_min_float
+**Added:**
+- `increment_float(key, amount=1.0)` — atomically add a float amount.  The
+  existing increment() only handles integers; monitoring metrics, rates, and
+  monetary values need float precision.  Initialises to 0.0 if absent.
+- `atomic_max_float(key, value)` — atomically set key = max(current, value).
+  Extends atomic_max() (integers only) to float high-water marks.
+- `atomic_min_float(key, value)` — atomically set key = min(current, value).
+  Extends atomic_min() to float low-water marks.
+- All three use update() under the write lock for atomicity.
+- 20 new tests (tests/test_float_arithmetic.py) — 1010 total.
+
+---
+
 ## Iteration 71 — map_values() batched in-place value transformation
 **Scaling fix:**
 - `map_values(fn, start, end, batch_size=500)` — apply a transform function to
