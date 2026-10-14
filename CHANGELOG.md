@@ -5,6 +5,20 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 74 — Fix scan_with_ttl() double-read per key
+**Scaling fix:**
+- `scan_with_ttl()` previously called `ttl_remaining(key)` for every entry,
+  which triggered a full key lookup (memtable → imm → SSTable chain) even
+  though `scan()` had already fetched the same value.  For a 100K-key scan
+  this was 200K storage lookups instead of 100K.
+- Added `_scan_expiry()` — an internal generator that mirrors `scan()` but
+  also surfaces the raw expiry timestamp decoded by the heap merge.
+  `scan_with_ttl()` now delegates to `_scan_expiry()` and computes
+  ttl_remaining as `exp - now` in a single pass.
+- Public `scan()` API is unchanged; all existing tests still pass.
+
+---
+
 ## Iteration 73 — Atomic conditional ops: set_if_absent / set_if_present / getset / getdel
 **Added:**
 - `set_if_absent(key, value, ttl_seconds=0)` (Redis SET NX) — write only if key

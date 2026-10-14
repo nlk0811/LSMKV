@@ -2017,6 +2017,83 @@ class LSMTree:
             self.write(batch)
         return changed
 
+    def _scan_expiry(self, start=None, end=None) -> Iterator[Tuple[str, str, Optional[float]]]:
+        """Internal scan yielding (key, value, expires_at_or_None).
+
+        Avoids the double-read that scan_with_ttl() would incur if it called
+        ttl_remaining() per key: the expiry timestamp is decoded once from the
+        same raw value the heap merge already fetched.
+        """
+        import time as _time_mod
+        self.metrics.inc(scans=1)
+        sb = _b(start) if start else None
+        eb = _b(end)   if end   else None
+
+        with self._lock:
+            levels = [list(lvl) for lvl in self._manifest.levels]
+
+        imm = self._imm
+        sources: List[Any] = [self._memtable.scan(sb, eb)]
+        if imm is not None:
+            sources.append(imm.scan(sb, eb))
+
+        readers: List[SSTableReader] = []
+        for lvl_idx, lvl in enumerate(levels):
+            order = list(reversed(lvl)) if lvl_idx == 0 else lvl
+            for path in order:
+                if not os.path.exists(path):
+                    continue
+                cached = self._reader_cache.get(path)
+                if cached is not None:
+                    fk = cached.first_key
+                    lk = cached.last_key
+                    if fk and lk:
+                        if (eb is not None and fk >= eb) or (sb is not None and lk < sb):
+                            continue
+                self._scan_sem.acquire()
+                try:
+                    template = self._reader_cache.get(path)
+                    rdr = SSTableReader(path, block_cache=self._block_cache,
+                                        _template=template)
+                    readers.append(rdr)
+                    sources.append(rdr.scan(sb, eb))
+                except Exception:
+                    self._scan_sem.release()
+
+        try:
+            heap: list = []
+            for pri, it in enumerate(sources):
+                try:
+                    k, v, d = next(it)
+                    heapq.heappush(heap, _E(k, pri, v or b'', d, it))
+                except StopIteration:
+                    pass
+
+            last: Optional[bytes] = None
+            while heap:
+                e = heapq.heappop(heap)
+                try:
+                    k, v, d = next(e.it)
+                    heapq.heappush(heap, _E(k, e.pri, v or b'', d, e.it))
+                except StopIteration:
+                    pass
+                if e.key == last:
+                    continue
+                last = e.key
+                if e.tomb:
+                    continue
+                val, exp = _ttl_decode(e.val)
+                if _ttl_expired(exp):
+                    continue
+                yield _s(e.key), _s(val), exp
+        finally:
+            for rdr in readers:
+                try:
+                    rdr.close()
+                except Exception:
+                    pass
+                self._scan_sem.release()
+
     def scan_with_ttl(self,
                       start=None,
                       end=None) -> Iterator[Tuple[str, str, Optional[float]]]:
@@ -2025,13 +2102,19 @@ class LSMTree:
         ttl_remaining is None if the key has no TTL; negative if the key's TTL
         expired but the entry hasn't yet been purged by compaction.
 
+        Uses a single storage pass — the expiry timestamp is decoded from the
+        value already retrieved by the heap merge, avoiding the double-read
+        that calling ttl_remaining() per key would cause.
+
         Example — find sessions expiring within 5 minutes:
             for key, val, ttl in db.scan_with_ttl('session:'):
                 if ttl is not None and ttl < 300:
                     db.touch(key, ttl_seconds=3600)
         """
-        for key, val in self.scan(start, end):
-            yield key, val, self.ttl_remaining(key)
+        _now = time.time()
+        for key, val, exp in self._scan_expiry(start, end):
+            ttl = None if exp is None else exp - _now
+            yield key, val, ttl
 
     def copy(self, src_key, dst_key, ttl_seconds: float = 0) -> bool:
         """Copy src_key's value to dst_key.  Returns True if src existed.
