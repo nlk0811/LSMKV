@@ -2685,6 +2685,9 @@ class LSMTree:
         }
 
     def close(self):
+        if self._read_pool is not None:
+            self._read_pool.shutdown(wait=False)
+            self._read_pool = None
         if self._read_only:
             self._drain_reader_cache()
             return
@@ -2692,9 +2695,6 @@ class LSMTree:
         self._imm_pending.set()
         self._bg.join(timeout=5)
         self._compaction_executor.shutdown(wait=True)
-        if self._read_pool is not None:
-            self._read_pool.shutdown(wait=False)
-            self._read_pool = None
         with self._write_lock:
             if self._imm is not None:
                 self._flush_imm()

@@ -5,6 +5,19 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 85 — Fix read-only pool leak + Namespace.count_prefix/is_empty/first/last
+**Bug fix:**
+- `close()` for read-only databases was missing `_read_pool.shutdown()`.  If a
+  read-only DB called `get_many(workers>1)`, the thread pool was created but
+  never cleaned up.  Fixed by moving the pool teardown before the early-return
+  read-only guard.
+**Added:**
+- `Namespace.count_prefix(prefix)`, `is_empty(start, end)`, `first(start, end)`,
+  `last(start, end)` — matching the LSMTree convenience methods added in iter-84.
+- All 63 namespace + read-only tests still pass.
+
+---
+
 ## Iteration 84 — count_prefix(), is_empty(), first(), last() convenience methods
 **Added:**
 - `count_prefix(prefix)` — count live keys with a given prefix; shorthand for

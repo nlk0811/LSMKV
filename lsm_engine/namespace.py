@@ -120,6 +120,25 @@ class Namespace:
     def count(self, start: str = None, end: str = None) -> int:
         return sum(1 for _ in self.scan_keys(start, end))
 
+    def count_prefix(self, prefix: str) -> int:
+        """Count keys in this namespace whose local key starts with prefix."""
+        return self._db.count_prefix(self._prefix + prefix)
+
+    def is_empty(self, start: str = None, end: str = None) -> bool:
+        """Return True if no live keys exist in the given namespace range."""
+        return next(self.scan_keys(start, end, limit=1), None) is None
+
+    def first(self, start: str = None, end: str = None) -> Optional[Tuple[str, str]]:
+        """Return first (local_key, value) in range, or None."""
+        return next(self.scan(start, end, limit=1), None)
+
+    def last(self, start: str = None, end: str = None) -> Optional[Tuple[str, str]]:
+        """Return last (local_key, value) in range, or None.  O(n) scan."""
+        result = None
+        for pair in self.scan(start, end):
+            result = pair
+        return result
+
     def clear(self) -> int:
         """Delete all keys in this namespace.  Returns count deleted."""
         return self._db.delete_prefix(self._prefix)
