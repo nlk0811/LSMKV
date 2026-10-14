@@ -1,6 +1,6 @@
 # LSMKV
 
-[![Python Tests](https://img.shields.io/badge/python%20tests-835%2F835%20passing-brightgreen)](#testing)
+[![Python Tests](https://img.shields.io/badge/python%20tests-1055%2F1055%20passing-brightgreen)](#testing)
 [![C++ Tests](https://img.shields.io/badge/c%2B%2B%20tests-43%2F43%20passing-brightgreen)](#testing)
 [![Crash Recovery](https://img.shields.io/badge/crash%20recovery-5%2F5%20PASS-brightgreen)](#crash-recovery)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](#license)
@@ -156,31 +156,116 @@ LSMTree(directory,
         compaction_filter=None)      # fn(key, value, level) → bytes|None
 ```
 
+**Core reads / writes**
+
 | Method | Description |
 |---|---|
 | `put(key, value, ttl_seconds=0)` | Insert or overwrite. `ttl_seconds > 0` sets expiry. |
 | `get(key) → str\|None` | Return value, or `None` if absent / deleted / expired. |
 | `delete(key)` | Write a tombstone. Removed during compaction. |
-| `get_many(keys) → dict` | `{key: value_or_None}` for all requested keys. |
+| `has(key) → bool` | Return `True` if key exists (uses Bloom filter). |
 | `write(batch: WriteBatch)` | Apply all batch ops atomically — one WAL fsync. |
+
+**Atomic read-modify-write**
+
+| Method | Description |
+|---|---|
 | `update(key, fn, ttl_seconds=0)` | Atomic read-modify-write: `new_val = fn(current_val)`. |
 | `compare_and_swap(key, expected, new)` | Atomic CAS. Returns `True` if swapped. |
 | `increment(key, amount=1) → int` | Atomic integer increment. Returns new value. |
-| `scan(start, end) → Iterator` | Range scan, tombstones and expired TTL excluded. |
-| `scan_keys(start, end) → Iterator[str]` | Keys only — no value fetch overhead. |
-| `prefix_scan(prefix) → Iterator` | All keys starting with `prefix`, sorted. |
-| `cursor() → Cursor` | Stateful cursor for seek + pagination. |
-| `delete_prefix(prefix) → int` | Atomic delete of all keys with prefix. Returns count. |
+| `increment_float(key, amount=1.0) → float` | Atomic float increment. |
+| `atomic_max(key, value) → int` | Atomic integer high-water mark. |
+| `atomic_min(key, value) → int` | Atomic integer low-water mark. |
+| `atomic_max_float(key, value) → float` | Atomic float high-water mark. |
+| `atomic_min_float(key, value) → float` | Atomic float low-water mark. |
+| `set_if_absent(key, value, ttl=0) → bool` | Write only if key absent (Redis SET NX). |
+| `set_if_present(key, value, ttl=0) → bool` | Write only if key exists (Redis SET XX). |
+| `getset(key, new_value) → str\|None` | Atomically swap value, return old value. |
+| `getdel(key) → str\|None` | Atomically read then delete (one-time tokens). |
+
+**Bulk reads**
+
+| Method | Description |
+|---|---|
+| `get_many(keys, workers=1) → dict` | Batch get; `workers>1` parallelises I/O reads. |
+| `mget(keys, workers=1) → dict` | Alias for `get_many`. |
+| `exists_many(keys) → dict[str,bool]` | Batch `has()` with Bloom filter screening. |
+
+**Bulk writes / deletes**
+
+| Method | Description |
+|---|---|
+| `mset(mapping, ttl_seconds=0)` | Batch put in one WAL fsync. |
+| `delete_many(keys) → int` | Batch delete in one WAL fsync. |
+| `mdel(keys) → int` | Alias for `delete_many`. |
+| `rename(old, new) → bool` | Atomic copy+delete. |
+| `rename_many(mapping) → int` | Batch rename in one WAL fsync. |
+| `copy(src, dst, ttl=0) → bool` | Copy value to new key. |
+| `swap(key1, key2) → bool` | Atomic swap of two keys' values. |
+
+**Scans and iteration**
+
+| Method | Description |
+|---|---|
+| `scan(start, end, limit=None) → Iterator` | Range scan; `limit=` stops early for pagination. |
+| `scan_keys(start, end, limit=None) → Iterator` | Keys only — no value fetch overhead. |
+| `prefix_scan(prefix) → Iterator` | All `(key,value)` pairs starting with `prefix`. |
+| `scan_filter(fn, start, end, limit) → Iterator` | Stream `(k,v)` pairs where `fn(k,v)` is True. O(1) memory. |
+| `grep(pattern, start, end, limit) → Iterator` | Stream keys matching regex. Values not fetched. |
+| `scan_with_ttl(start, end) → Iterator` | Yield `(key, value, ttl_remaining)` in one storage pass. |
+| `tail(n, end=None) → list` | Last `n` (key,value) pairs. O(n) memory. |
 | `iter_batches(batch_size, start, end)` | Yield `[(key,value)]` lists of `batch_size`. |
+| `cursor() → Cursor` | Stateful cursor for seek + pagination. |
+
+**Bulk transformations**
+
+| Method | Description |
+|---|---|
+| `map_values(fn, start, end, batch_size=500) → int` | In-place transform; `None` return deletes key. |
+| `prefix_delete(prefix, batch_size=500) → int` | O(batch_size) memory bulk prefix delete. |
+| `delete_prefix(prefix, batch_size=500) → int` | Alias for `prefix_delete`. |
+| `range_delete(start, end, batch_size=500) → int` | O(batch_size) memory bulk range delete. |
+| `prefix_scan(prefix) → Iterator` | All keys starting with `prefix`, sorted. |
+
+**TTL operations**
+
+| Method | Description |
+|---|---|
+| `expire(key, ttl_seconds) → bool` | Set / update a key's TTL. |
+| `expireat(key, timestamp) → bool` | Set absolute expiry timestamp. |
+| `touch(key, ttl_seconds) → bool` | Renew TTL without changing value. |
+| `touch_many(keys, ttl_seconds) → int` | Batch TTL refresh in one WAL fsync. |
+| `ttl_remaining(key) → float\|None` | Seconds until expiry, or `None` if permanent. |
+| `key_type(key) → str` | `'string'` / `'expired'` / `'none'`. |
+| `bulk_expire(prefix, ttl_seconds) → int` | Apply TTL to all keys under prefix. |
+
+**Key utilities**
+
+| Method | Description |
+|---|---|
+| `ceiling_key(key) → str\|None` | Smallest key ≥ key. |
+| `floor_key(key) → str\|None` | Largest key ≤ key. |
+| `first_key(start, end) → str\|None` | First live key in range. |
+| `last_key(start, end) → str\|None` | Last live key in range. |
+| `count(start, end) → int` | Exact live key count (O(n) scan). |
+| `estimate_key_count() → int` | O(levels) estimate, no disk I/O. |
+| `sample(n, start, end) → list` | Reservoir sample of n (key,value) pairs. |
+
+**Engine operations**
+
+| Method | Description |
+|---|---|
 | `snapshot() → Snapshot` | Point-in-time read-only view (context manager). |
 | `flush()` | Force memtable to disk immediately. |
 | `backup(dir) → dict` | Consistent hot backup. Open with `LSMTree(dir)`. |
 | `compact_range(start, end)` | Synchronous range compaction. |
 | `compact_all() → dict` | Full compaction, blocks until done. |
 | `wait_for_compaction(timeout) → bool` | Block until all compaction jobs finish. |
-| `estimate_key_count() → int` | O(levels) estimate, no disk I/O. |
+| `export(path, format, start, end) → int` | Export to JSONL file. |
+| `import_(path, format, batch_size) → int` | Import from JSONL file. |
 | `stats() → dict` | Full metrics snapshot + level sizes + latency percentiles. |
 | `stats_report() → str` | Formatted one-screen dashboard. |
+| `scaling_report() → str` | Diagnose scaling bottlenecks in the current DB. |
 | `close()` | Flush, stop background threads, close WAL. |
 
 ### `WriteBatch`
@@ -362,7 +447,7 @@ Full diagnosis in [SCALING_ISSUES.md](Project/SCALING_ISSUES.md).
 cd Project
 pip install pytest
 pytest tests/ -v
-# 244 tests, ~8 minutes
+# 1055 tests across 70+ test files
 ```
 
 | Test file | What it covers |
