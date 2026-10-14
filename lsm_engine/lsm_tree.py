@@ -2248,6 +2248,56 @@ class LSMTree:
         """
         return sum(1 for _ in self.scan_keys(start, end))
 
+    def count_prefix(self, prefix: str) -> int:
+        """Count live keys that start with prefix.  O(n) key-only scan.
+
+        Shorthand for count(prefix, end_of_prefix).
+
+        Example:
+            active_sessions = db.count_prefix('session:')
+        """
+        pb  = _b(prefix)
+        end = _prefix_end(pb)
+        return self.count(
+            _s(pb)  if pb  else None,
+            _s(end) if end else None,
+        )
+
+    def is_empty(self, start=None, end=None) -> bool:
+        """Return True if no live keys exist in [start, end).
+
+        O(1) — inspects at most one key via scan(limit=1).
+
+        Example:
+            if db.is_empty('cart:user:99:'):
+                redirect_to_empty_cart_page()
+        """
+        return next(self.scan_keys(start, end, limit=1), None) is None
+
+    def first(self, start=None, end=None) -> Optional[tuple]:
+        """Return the first (key, value) pair in [start, end), or None.
+
+        O(log n) — uses scan(limit=1) which seeks to the start position.
+
+        Example:
+            oldest_order = db.first('order:', 'order;')
+        """
+        return next(self.scan(start, end, limit=1), None)
+
+    def last(self, start=None, end=None) -> Optional[tuple]:
+        """Return the last (key, value) pair in [start, end), or None.
+
+        O(n) — scans the full range (no reverse iteration).  Use
+        `last_key(start, end)` if you only need the key.
+
+        Example:
+            latest_log = db.last('log:2026-10-')
+        """
+        result = None
+        for pair in self.scan(start, end):
+            result = pair
+        return result
+
     def key_stats(self, sample_size: int = 1000) -> dict:
         """Sample up to sample_size live entries and return size statistics.
 

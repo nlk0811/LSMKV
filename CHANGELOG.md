@@ -5,6 +5,18 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 84 — count_prefix(), is_empty(), first(), last() convenience methods
+**Added:**
+- `count_prefix(prefix)` — count live keys with a given prefix; shorthand for
+  count(prefix, end_of_prefix).
+- `is_empty(start, end)` — O(1) empty-range check via scan(limit=1).
+- `first(start, end)` — return first (key, value) pair, O(log n).
+- `last(start, end)` — return last (key, value) pair, O(n) scan (documented).
+  Complements the existing first_key/last_key which return only the key.
+- 23 new tests (tests/test_count_first_last.py) — 1112 total.
+
+---
+
 ## Iteration 83 — Namespace.scan/scan_keys/keys/values/items support limit=
 **Scaling fix:**
 - `Namespace.scan(start, end, limit=None)` — added `limit=` parameter.
