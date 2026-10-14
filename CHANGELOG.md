@@ -5,6 +5,21 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 82 — Pipeline.merge/merge_batch/counts + fix __all__ exports
+**Added:**
+- `Pipeline.merge_batch(batch)` — merge a pre-built WriteBatch into a pipeline
+  for one-fsync composite writes.
+- `Pipeline.merge(other)` — merge another Pipeline's pending ops.
+- `Pipeline.put_count`, `Pipeline.delete_count` — op type counts (consistent
+  with WriteBatch.put_count/delete_count added in iter-81).
+- `Pipeline.__repr__` updated to show put/delete counts.
+- Fixed `__init__.py __all__`  — was missing 13 exported classes (Bitmap,
+  Collection, Queue, PriorityQueue, MultiMap, Trie, HyperLogLog, Graph, Index,
+  TimeSeries, Leaderboard, Namespace, Transaction).
+  `from lsm_engine import *` now exports all public classes.
+
+---
+
 ## Iteration 81 — WriteBatch.merge/copy/put_count/delete_count + db.disk_usage()
 **Added:**
 - `WriteBatch.merge(other)` — append another batch's ops (returns self for
