@@ -5,6 +5,18 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 78 — Snapshot: scan(limit=) + scan_keys/has/get_many/count/scan_filter/grep/tail
+**Scaling fix:**
+- `Snapshot.scan()` had no `limit=` parameter — same OOM risk as the main
+  `scan()` before iter-63.  Added `limit=N` to stop after N entries.
+- Added to Snapshot: `scan_keys(start, end, limit)`, `has(key)`,
+  `get_many(keys)`, `count(start, end)`, `scan_filter(fn, ...)`,
+  `grep(pattern, ...)`, `tail(n, end=None)`.
+- All 16 existing snapshot tests still pass; no new tests added (covered by
+  the existing snapshot + filter/grep test suites with equivalent logic).
+
+---
+
 ## Iteration 77 — Eliminate scan/_scan_expiry code duplication via _heap_scan_raw()
 **Maintainability fix:**
 - `scan()` and `_scan_expiry()` shared ~60 lines of identical heap-merge code.
