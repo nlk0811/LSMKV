@@ -5,6 +5,18 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 77 — Eliminate scan/_scan_expiry code duplication via _heap_scan_raw()
+**Maintainability fix:**
+- `scan()` and `_scan_expiry()` shared ~60 lines of identical heap-merge code.
+  Any bug fix in one had to be replicated in the other manually.
+- Extracted `_heap_scan_raw(sb, eb)` — a single canonical heap-merge generator
+  yielding (key_bytes, val_bytes, exp).  `scan()` wraps it to (str, str) and
+  `_scan_expiry()` wraps it to (str, str, exp).
+- Reduces implementation from ~120 lines (two copies) to ~70 lines
+  (one shared + two 5-line wrappers).  All 1055 tests still pass.
+
+---
+
 ## Iteration 75 — Namespace forwards all methods added since iter 62
 **Scaling fix:**
 - `Namespace` was missing every method added since iteration 62.  Users of

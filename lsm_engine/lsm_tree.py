@@ -1476,28 +1476,13 @@ class LSMTree:
         )
         return float(result)
 
-    def scan(self,
-             start = None,
-             end   = None,
-             limit: Optional[int] = None) -> Iterator[Tuple[str, str]]:
-        """Range scan yielding (key, value), tombstones excluded.
+    def _heap_scan_raw(self, sb, eb):
+        """Shared heap-merge generator yielding (key_bytes, val_bytes, exp).
 
-        Caps open SSTable fds at MAX_SCAN_FDS via a semaphore.
-
-        limit — stop after yielding this many entries.  None means unlimited.
-                Use limit= for safe pagination; without it a full-table scan
-                on a large DB can exhaust memory if collected into a list.
-
-        Example:
-            # page 1
-            pairs = list(db.scan('user:', 'user;', limit=50))
-            # page 2 (resume after last key from previous page)
-            pairs = list(db.scan(pairs[-1][0] + '\\x00', 'user;', limit=50))
+        Both scan() and _scan_expiry() delegate here so the heap-merge setup,
+        SSTable fd management, and key-range pre-filter live in one place.
+        Callers wrap this to produce their respective public tuple shapes.
         """
-        self.metrics.inc(scans=1)
-        sb = _b(start) if start else None
-        eb = _b(end)   if end   else None
-
         with self._lock:
             levels = [list(lvl) for lvl in self._manifest.levels]
 
@@ -1507,13 +1492,11 @@ class LSMTree:
             sources.append(imm.scan(sb, eb))
 
         readers: List[SSTableReader] = []
-
         for lvl_idx, lvl in enumerate(levels):
             order = list(reversed(lvl)) if lvl_idx == 0 else lvl
             for path in order:
                 if not os.path.exists(path):
                     continue
-                # Key-range pre-filter for scan: skip reader if entirely outside [sb, eb)
                 cached = self._reader_cache.get(path)
                 if cached is not None:
                     fk = cached.first_key
@@ -1524,8 +1507,6 @@ class LSMTree:
                             continue
                 self._scan_sem.acquire()
                 try:
-                    # If a cached reader exists, borrow its index + Bloom filter
-                    # to avoid 3 redundant disk seeks (footer, index, bloom).
                     template = self._reader_cache.get(path)
                     rdr = SSTableReader(path, block_cache=self._block_cache,
                                         _template=template)
@@ -1534,7 +1515,6 @@ class LSMTree:
                 except Exception:
                     self._scan_sem.release()
 
-        entries = 0
         try:
             heap: list = []
             for pri, it in enumerate(sources):
@@ -1560,18 +1540,45 @@ class LSMTree:
                 val, exp = _ttl_decode(e.val)
                 if _ttl_expired(exp):
                     continue
-                if limit is not None and entries >= limit:
-                    break
-                entries += 1
-                yield _s(e.key), _s(val)
+                yield e.key, val, exp
         finally:
-            self.metrics.inc(scan_entries=entries)
             for rdr in readers:
                 try:
                     rdr.close()
                 except Exception:
                     pass
                 self._scan_sem.release()
+
+    def scan(self,
+             start = None,
+             end   = None,
+             limit: Optional[int] = None) -> Iterator[Tuple[str, str]]:
+        """Range scan yielding (key, value), tombstones excluded.
+
+        Caps open SSTable fds at MAX_SCAN_FDS via a semaphore.
+
+        limit — stop after yielding this many entries.  None means unlimited.
+                Use limit= for safe pagination; without it a full-table scan
+                on a large DB can exhaust memory if collected into a list.
+
+        Example:
+            # page 1
+            pairs = list(db.scan('user:', 'user;', limit=50))
+            # page 2 (resume after last key from previous page)
+            pairs = list(db.scan(pairs[-1][0] + '\\x00', 'user;', limit=50))
+        """
+        self.metrics.inc(scans=1)
+        sb = _b(start) if start else None
+        eb = _b(end)   if end   else None
+        entries = 0
+        try:
+            for key_b, val_b, _exp in self._heap_scan_raw(sb, eb):
+                if limit is not None and entries >= limit:
+                    break
+                entries += 1
+                yield _s(key_b), _s(val_b)
+        finally:
+            self.metrics.inc(scan_entries=entries)
 
     def prefix_scan(self, prefix) -> Iterator[Tuple[str, str]]:
         """Yield all (key, value) pairs where key starts with prefix, sorted."""
@@ -2020,79 +2027,14 @@ class LSMTree:
     def _scan_expiry(self, start=None, end=None) -> Iterator[Tuple[str, str, Optional[float]]]:
         """Internal scan yielding (key, value, expires_at_or_None).
 
-        Avoids the double-read that scan_with_ttl() would incur if it called
-        ttl_remaining() per key: the expiry timestamp is decoded once from the
-        same raw value the heap merge already fetched.
+        Delegates to _heap_scan_raw() — the expiry timestamp is decoded once
+        from the value already retrieved by the heap merge.
         """
-        import time as _time_mod
         self.metrics.inc(scans=1)
         sb = _b(start) if start else None
         eb = _b(end)   if end   else None
-
-        with self._lock:
-            levels = [list(lvl) for lvl in self._manifest.levels]
-
-        imm = self._imm
-        sources: List[Any] = [self._memtable.scan(sb, eb)]
-        if imm is not None:
-            sources.append(imm.scan(sb, eb))
-
-        readers: List[SSTableReader] = []
-        for lvl_idx, lvl in enumerate(levels):
-            order = list(reversed(lvl)) if lvl_idx == 0 else lvl
-            for path in order:
-                if not os.path.exists(path):
-                    continue
-                cached = self._reader_cache.get(path)
-                if cached is not None:
-                    fk = cached.first_key
-                    lk = cached.last_key
-                    if fk and lk:
-                        if (eb is not None and fk >= eb) or (sb is not None and lk < sb):
-                            continue
-                self._scan_sem.acquire()
-                try:
-                    template = self._reader_cache.get(path)
-                    rdr = SSTableReader(path, block_cache=self._block_cache,
-                                        _template=template)
-                    readers.append(rdr)
-                    sources.append(rdr.scan(sb, eb))
-                except Exception:
-                    self._scan_sem.release()
-
-        try:
-            heap: list = []
-            for pri, it in enumerate(sources):
-                try:
-                    k, v, d = next(it)
-                    heapq.heappush(heap, _E(k, pri, v or b'', d, it))
-                except StopIteration:
-                    pass
-
-            last: Optional[bytes] = None
-            while heap:
-                e = heapq.heappop(heap)
-                try:
-                    k, v, d = next(e.it)
-                    heapq.heappush(heap, _E(k, e.pri, v or b'', d, e.it))
-                except StopIteration:
-                    pass
-                if e.key == last:
-                    continue
-                last = e.key
-                if e.tomb:
-                    continue
-                val, exp = _ttl_decode(e.val)
-                if _ttl_expired(exp):
-                    continue
-                yield _s(e.key), _s(val), exp
-        finally:
-            for rdr in readers:
-                try:
-                    rdr.close()
-                except Exception:
-                    pass
-                self._scan_sem.release()
+        for key_b, val_b, exp in self._heap_scan_raw(sb, eb):
+            yield _s(key_b), _s(val_b), exp
 
     def scan_with_ttl(self,
                       start=None,
