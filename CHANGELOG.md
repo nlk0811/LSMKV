@@ -5,6 +5,21 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 79 — Transaction.scan() / scan_keys() / get_many() for atomic range reads
+**Added:**
+- `Transaction.scan(start, end)` — yield (key, value) pairs and record each
+  in the OCC read set.  Enables atomic read-all-then-write patterns (e.g.
+  "sum all items in a cart, write the total atomically").
+  Documents the phantom-read caveat (keys added by concurrent writers are
+  not detected as conflicts).
+- `Transaction.scan_keys(start, end)` — keys-only scan variant.
+- `Transaction.get_many(keys)` — batch multi-key read, each key tracked.
+- Conflict detection verified: if any key read via scan/get_many is modified
+  before commit(), commit() correctly returns False.
+- 14 new tests (tests/test_transaction_scan.py) — 1069 total.
+
+---
+
 ## Iteration 78 — Snapshot: scan(limit=) + scan_keys/has/get_many/count/scan_filter/grep/tail
 **Scaling fix:**
 - `Snapshot.scan()` had no `limit=` parameter — same OOM risk as the main
