@@ -5,6 +5,16 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 83 — Namespace.scan/scan_keys/keys/values/items support limit=
+**Scaling fix:**
+- `Namespace.scan(start, end, limit=None)` — added `limit=` parameter.
+  Without it, any call to `ns.scan()` on a namespace with many keys had the
+  same OOM risk as the main scan() before iter-63.
+- Propagated `limit=` through `scan_keys`, `keys`, `values`, `items`.
+- Full test suite verified: all 1089 tests pass.
+
+---
+
 ## Iteration 82 — Pipeline.merge/merge_batch/counts + fix __all__ exports
 **Added:**
 - `Pipeline.merge_batch(batch)` — merge a pre-built WriteBatch into a pipeline

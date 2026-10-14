@@ -78,31 +78,42 @@ class Namespace:
 
     # ── scans (keys appear without prefix) ───────────────────────────────────
 
-    def scan(self, start: str = None, end: str = None
-             ) -> Iterator[Tuple[str, str]]:
-        """Yield (local_key, value) pairs within the namespace."""
+    def scan(self, start: str = None, end: str = None,
+             limit: Optional[int] = None) -> Iterator[Tuple[str, str]]:
+        """Yield (local_key, value) pairs within the namespace.
+
+        limit — stop after yielding this many entries (same semantics as
+                LSMTree.scan(limit=)).
+        """
         full_start = self._prefix + start if start else self._prefix
         full_end   = self._prefix + end   if end   else None
         plen = len(self._prefix)
+        count = 0
         for key, val in self._db.scan(full_start, full_end):
             if not key.startswith(self._prefix):
                 break   # left the namespace
+            if limit is not None and count >= limit:
+                break
+            count += 1
             yield key[plen:], val
 
-    def scan_keys(self, start: str = None, end: str = None) -> Iterator[str]:
-        for key, _ in self.scan(start, end):
+    def scan_keys(self, start: str = None, end: str = None,
+                  limit: Optional[int] = None) -> Iterator[str]:
+        for key, _ in self.scan(start, end, limit=limit):
             yield key
 
-    def keys(self, start: str = None, end: str = None) -> Iterator[str]:
-        return self.scan_keys(start, end)
+    def keys(self, start: str = None, end: str = None,
+             limit: Optional[int] = None) -> Iterator[str]:
+        return self.scan_keys(start, end, limit=limit)
 
-    def values(self, start: str = None, end: str = None) -> Iterator[str]:
-        for _, val in self.scan(start, end):
+    def values(self, start: str = None, end: str = None,
+               limit: Optional[int] = None) -> Iterator[str]:
+        for _, val in self.scan(start, end, limit=limit):
             yield val
 
-    def items(self, start: str = None, end: str = None
-              ) -> Iterator[Tuple[str, str]]:
-        return self.scan(start, end)
+    def items(self, start: str = None, end: str = None,
+              limit: Optional[int] = None) -> Iterator[Tuple[str, str]]:
+        return self.scan(start, end, limit=limit)
 
     # ── utility ───────────────────────────────────────────────────────────────
 
