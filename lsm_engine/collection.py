@@ -122,28 +122,51 @@ class Collection:
         for k in self._db.scan_keys(self._prefix(), self._prefix()[:-1] + ';'):
             yield k[plen:]
 
-    # ── set operations (return frozenset) ─────────────────────────────────────
+    # ── set operations ────────────────────────────────────────────────────────
 
     def union(self, other: 'Collection') -> FrozenSet[str]:
+        """Return members in self OR other.  O(|self| + |other|) memory."""
         return self.members() | other.members()
 
     def intersection(self, other: 'Collection') -> FrozenSet[str]:
-        return self.members() & other.members()
+        """Return members in both self AND other.
+
+        Streams self, checks other.contains() per entry via Bloom filter.
+        O(|self|) time, O(|intersection|) memory — much cheaper than loading
+        both full sets when the result is small.
+        """
+        return frozenset(m for m in self if other.contains(m))
 
     def difference(self, other: 'Collection') -> FrozenSet[str]:
-        return self.members() - other.members()
+        """Return members in self but NOT in other.
+
+        Streams self, excludes members present in other.
+        O(|self|) time, O(|difference|) memory.
+        """
+        return frozenset(m for m in self if not other.contains(m))
 
     def symmetric_difference(self, other: 'Collection') -> FrozenSet[str]:
+        """Return members in exactly one of self/other."""
         return self.members() ^ other.members()
 
     def is_subset(self, other: 'Collection') -> bool:
-        return self.members() <= other.members()
+        """Return True if every member of self is also in other.
+
+        Streams self; stops at the first member absent from other.
+        O(|self|) worst case but early-exits on first mismatch.
+        """
+        return all(other.contains(m) for m in self)
 
     def is_superset(self, other: 'Collection') -> bool:
-        return self.members() >= other.members()
+        """Return True if every member of other is also in self."""
+        return other.is_subset(self)
 
     def is_disjoint(self, other: 'Collection') -> bool:
-        return self.members().isdisjoint(other.members())
+        """Return True if self and other share no members.
+
+        Streams self; stops at the first shared member (O(1) early exit).
+        """
+        return not any(other.contains(m) for m in self)
 
     # ── Python protocols ──────────────────────────────────────────────────────
 

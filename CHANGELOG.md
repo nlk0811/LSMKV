@@ -5,6 +5,20 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 101 — Collection set operations streaming optimisation
+**Scaling fix:**
+- `intersection(other)` — was `members() & members()` (loads both full sets).
+  Now streams self and calls `other.contains()` per entry via Bloom filter.
+  O(|self|) time, O(|intersection|) memory vs O(|self| + |other|) before.
+- `difference(other)` — same approach.  O(|self|) time, O(|difference|) memory.
+- `is_subset(other)` — streams self, exits at first mismatch.  O(1) early exit
+  in the happy-failure case.
+- `is_disjoint(other)` — streams self, exits at first shared member.  O(1) early
+  exit when even one shared member is found.
+- `union()` and `symmetric_difference()` still load both sets (inherent).
+
+---
+
 ## Iteration 100 — Graph.dfs() depth-first traversal
 **Added:**
 - `Graph.dfs(start, max_depth=None)` — iterative depth-first traversal
