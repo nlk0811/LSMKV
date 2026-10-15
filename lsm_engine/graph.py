@@ -64,6 +64,38 @@ class Graph:
         self._db.put(self._edge_key(src, dst), val)
         self._db.put(self._pred_key(dst, src), '')
 
+    def add_edges(self, edges) -> int:
+        """Add multiple directed edges atomically in one WAL fsync.
+
+        edges — iterable of (src, dst) or (src, dst, weight) tuples.
+        N individual add_edge() calls = 2N WAL records; add_edges(N) = 1 fsync.
+
+        Returns count of edges added.
+
+        Example:
+            graph.add_edges([
+                ('alice', 'bob'),
+                ('bob', 'carol', 1.5),   # with weight
+                ('alice', 'carol'),
+            ])
+        """
+        from .write_batch import WriteBatch as _WB
+        batch = _WB()
+        count = 0
+        for edge in edges:
+            if len(edge) == 2:
+                src, dst = edge
+                val = ''
+            else:
+                src, dst, w = edge
+                val = str(w) if w is not None else ''
+            batch.put(self._edge_key(src, dst), val)
+            batch.put(self._pred_key(dst, src), '')
+            count += 1
+        if count:
+            self._db.write(batch)
+        return count
+
     def remove_edge(self, src: str, dst: str) -> bool:
         """Remove edge src→dst.  Returns True if it existed."""
         if not self.has_edge(src, dst):

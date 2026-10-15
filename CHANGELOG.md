@@ -5,6 +5,16 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 104 — Leaderboard.add_many + Graph.add_edges batch writes
+**Scaling fix:**
+- `Leaderboard.add_many({member: score})` — N individual add() = 2N WAL records;
+  add_many(N) = 1 WAL fsync.  Handles existing members by including old rank-key
+  deletes in the same WriteBatch.
+- `Graph.add_edges(edges)` — N individual add_edge() = 2N WAL records;
+  add_edges(N) = 1 WAL fsync.  Accepts (src, dst) or (src, dst, weight) tuples.
+
+---
+
 ## Iteration 103 — Index.add() batch write optimisation
 **Scaling fix:**
 - `Index.add(doc_id, text)` — was writing doc text + N token entries as N+1

@@ -67,6 +67,29 @@ class Leaderboard:
         self._db.put(self._score_key(member), str(score))
         self._db.put(self._rank_key(score, member), '')
 
+    def add_many(self, member_scores: dict) -> None:
+        """Set scores for multiple members atomically in one WAL fsync.
+
+        N individual add() calls = 2N WAL records (score key + rank key each).
+        add_many(N) = 1 WAL fsync regardless of N.
+
+        Handles existing members correctly: old rank keys are deleted in the
+        same batch as the new ones.
+
+        Example:
+            lb.add_many({'alice': 5000, 'bob': 3000, 'carol': 7500})
+        """
+        from .write_batch import WriteBatch as _WB
+        batch = _WB()
+        for member, score in member_scores.items():
+            old_score = self.score(member)
+            if old_score is not None:
+                batch.delete(self._rank_key(old_score, member))
+            batch.put(self._score_key(member), str(score))
+            batch.put(self._rank_key(score, member), '')
+        if len(batch) > 0:
+            self._db.write(batch)
+
     def update(self, member: str, delta: int) -> int:
         """Atomically add delta to member's score.  Returns new score."""
         old   = self.score(member) or 0
