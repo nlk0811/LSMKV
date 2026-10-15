@@ -5,6 +5,16 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 105 — TimeSeries.add_many + MultiMap.add_many batch writes
+**Scaling fix:**
+- `TimeSeries.add_many(points)` — was calling add() N times (N WAL records).
+  Now uses WriteBatch = 1 WAL fsync.  Handles timestamp deduplication within
+  the batch by bumping microsecond counter if key already exists.
+- `MultiMap.add_many(key, *values)` — was calling add() N times (N WAL records).
+  Now checks existence for all values first, then writes new ones in one batch.
+
+---
+
 ## Iteration 104 — Leaderboard.add_many + Graph.add_edges batch writes
 **Scaling fix:**
 - `Leaderboard.add_many({member: score})` — N individual add() = 2N WAL records;

@@ -69,8 +69,20 @@ class MultiMap:
         return True
 
     def add_many(self, key: str, *values: str) -> int:
-        """Add multiple values for a key.  Returns count newly added."""
-        return sum(1 for v in values if self.add(key, v))
+        """Add multiple values for a key atomically in one WAL fsync.
+
+        Returns count newly added.
+        N individual add() calls = N WAL records; add_many(N) = 1 WAL fsync.
+        """
+        from .write_batch import WriteBatch as _WB
+        new_values = [v for v in values if not self._db.has(self._entry_key(key, v))]
+        if not new_values:
+            return 0
+        batch = _WB()
+        for v in new_values:
+            batch.put(self._entry_key(key, v), '')
+        self._db.write(batch)
+        return len(new_values)
 
     def remove(self, key: str, value: str) -> bool:
         """Remove a (key, value) pair.  Returns True if it existed."""

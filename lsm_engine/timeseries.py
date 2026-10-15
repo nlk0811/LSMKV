@@ -84,12 +84,21 @@ class TimeSeries:
         self._db.put(key, str(value))
 
     def add_many(self, points) -> None:
-        """Add multiple (value, timestamp) pairs.
+        """Add multiple (value, timestamp) pairs atomically in one WAL fsync.
 
         points: iterable of (value, timestamp) tuples.
+        N individual add() calls = N WAL records; add_many(N) = 1 WAL fsync.
         """
+        from .write_batch import WriteBatch as _WB
+        batch = _WB()
         for value, ts in points:
-            self.add(value, ts)
+            ts = float(ts)
+            us = int(ts * _US)
+            while self._db.has(f'__ts:{self._name}:{us:020d}'):
+                us += 1
+            batch.put(f'__ts:{self._name}:{us:020d}', str(float(value)))
+        if len(batch) > 0:
+            self._db.write(batch)
 
     # ── read ──────────────────────────────────────────────────────────────────
 
