@@ -5,6 +5,20 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 88 — Leaderboard.bottom/members OOM fixes
+**Scaling fix:**
+- `Leaderboard.bottom(n)` previously called `self.top(self.count())` which
+  loaded ALL members into memory just to take the last n.  Fixed to use
+  `db.tail(n)` with O(n) memory — rank keys use inverted scores so the last
+  n rank keys have the highest inv_score = lowest actual score = bottom n.
+- `Leaderboard.members()` previously called `self.top(self.count())` which
+  required a full count() O(n) scan first, then another O(n) scan via top().
+  Fixed to stream directly via prefix_scan — one pass, O(1) per entry.
+- For a leaderboard with 1M entries, `bottom(10)` now uses ~10 tuples of
+  memory instead of 1M.
+
+---
+
 ## Iteration 87 — TimeSeries.first/latest OOM fixes + range(limit=)
 **Scaling fix:**
 - `TimeSeries.first()` previously called `list(db.scan(...))` to get the
