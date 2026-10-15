@@ -73,19 +73,24 @@ class Graph:
         return True
 
     def remove_node(self, node: str) -> int:
-        """Remove all edges to and from node.  Returns number of edges removed."""
-        count = 0
-        # Remove outgoing edges
-        for dst in self.neighbors(node):
-            self._db.delete(self._edge_key(node, dst))
-            self._db.delete(self._pred_key(dst, node))
-            count += 1
-        # Remove incoming edges
-        for src in self.predecessors(node):
-            self._db.delete(self._edge_key(src, node))
-            self._db.delete(self._pred_key(node, src))
-            count += 1
-        return count
+        """Remove all edges to and from node.  Returns number of edges removed.
+
+        Uses one prefix_delete per direction + one delete_many for the reverse
+        index entries — avoids N individual WAL records for a hub node.
+        """
+        # Collect reverse-index cleanup keys before bulk deleting the forward index
+        out_dsts = list(self.neighbors(node))
+        in_srcs  = list(self.predecessors(node))
+
+        # Delete outgoing forward edges in bulk
+        self._db.prefix_delete(self._edge_prefix(node))
+        # Delete incoming reverse pointers in bulk
+        self._db.prefix_delete(self._pred_prefix(node))
+        # Clean up cross-index entries
+        self._db.delete_many([self._pred_key(dst, node) for dst in out_dsts])
+        self._db.delete_many([self._edge_key(src, node) for src in in_srcs])
+
+        return len(out_dsts) + len(in_srcs)
 
     def set_weight(self, src: str, dst: str, weight: float) -> bool:
         """Update the weight of an existing edge.  Returns False if absent."""
@@ -160,11 +165,9 @@ class Graph:
 
     def clear(self) -> int:
         """Remove all edges.  Returns count removed."""
-        all_keys = [k for k in self._db.scan_keys(
-            f'__graph:{self._name}:', f'__graph:{self._name};')]
-        for k in all_keys:
-            self._db.delete(k)
-        return len(all_keys) // 2
+        n = self.edge_count()
+        self._db.prefix_delete(f'__graph:{self._name}:')
+        return n
 
     # ── inspection ────────────────────────────────────────────────────────────
 

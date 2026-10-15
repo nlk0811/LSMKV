@@ -5,6 +5,16 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 93 — Graph.clear + Graph.remove_node efficiency fixes
+**Scaling fix:**
+- `Graph.clear()` — was list+N deletes; now `edge_count()` then `prefix_delete()`.
+- `Graph.remove_node(node)` — was 2N individual WAL records (delete each edge
+  then its reverse-index entry one-by-one).  Fixed to use two `prefix_delete()`
+  calls for forward/backward edge prefixes + two `delete_many()` for cross-index
+  cleanup.  For a hub node with 10K edges: 20K WAL records → 4 WAL fsyncs.
+
+---
+
 ## Iteration 92 — Trie.clear + Index.clear efficiency fixes + README badge update
 **Scaling fix:**
 - `Trie.clear()` — was list+N deletes; now `prefix_delete()`.
