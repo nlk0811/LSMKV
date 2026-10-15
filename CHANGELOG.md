@@ -5,6 +5,18 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 90 — PriorityQueue.clear + MultiMap.remove_all/clear efficiency fixes
+**Scaling fix:**
+- `PriorityQueue.clear()` — was list(scan_keys)+N deletes; now prefix_delete().
+- `MultiMap.remove_all(key)` — was list(scan_keys)+N deletes; now prefix_delete()
+  for the per-key entry prefix.
+- `MultiMap.clear()` — was list(scan_keys)+N deletes; now prefix_delete() for the
+  global prefix.
+- All three now use O(batch_size) memory and ceil(N/500) WAL fsyncs.
+- No `list(self._db...)` OOM patterns remain in any data structure class.
+
+---
+
 ## Iteration 89 — Collection.clear + Graph.degree/in_degree efficiency fixes
 **Scaling fix:**
 - `Collection.clear()` previously called `list(scan_keys(...))` to collect all
