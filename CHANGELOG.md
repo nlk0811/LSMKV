@@ -5,6 +5,18 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 95 — Queue.clear + Bitmap.clear_all efficiency fixes
+**Scaling fix:**
+- `Queue.clear()` — was building a pipeline with N individual delete ops (N
+  items × 2 for head/tail = N+2 ops in a single WriteBatch).  For a 1M-item
+  queue this queues 1M ops in memory.  Fixed to use `prefix_delete()`.
+- `Bitmap.clear_all()` — was list+N deletes; now `prefix_delete()`.
+- These are the last `list(...)+N_deletes` patterns across all LSMKV classes.
+  Every clear/drain/reset operation in every data structure now uses O(batch_size)
+  memory via prefix_delete(), range_delete(), or delete_many().
+
+---
+
 ## Iteration 94 — TimeSeries aggregation methods O(1) memory fix
 **Scaling fix:**
 - `TimeSeries.average/sum/minimum/maximum/count(start, end)` all called
