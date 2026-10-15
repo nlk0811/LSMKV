@@ -5,6 +5,17 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 92 — Trie.clear + Index.clear efficiency fixes + README badge update
+**Scaling fix:**
+- `Trie.clear()` — was list+N deletes; now `prefix_delete()`.
+- `Index.clear()` — was list+N deletes; now `count()` then `prefix_delete()`.
+  The pre-count preserves the correct return value with O(1) memory delete.
+- README badge updated: 1055 → 1112 tests.
+- These are the final instances of the `list(...)+N deletes` OOM pattern
+  across all data structure classes.
+
+---
+
 ## Iteration 91 — TimeSeries.delete_before/clear + reverse_scan(limit=)
 **Scaling fix:**
 - `TimeSeries.delete_before(ts)` — was list(scan_keys)+N deletes; now
