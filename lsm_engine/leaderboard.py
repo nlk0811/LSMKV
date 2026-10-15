@@ -149,6 +149,48 @@ class Leaderboard:
             result.append((member, _MAX_SCORE - inv_score))
         return result
 
+    def increment_score(self, member: str, delta: int) -> int:
+        """Add delta to member's score.  Returns new score.  Alias for update()."""
+        return self.update(member, delta)
+
+    def has(self, member: str) -> bool:
+        """Return True if member is in the leaderboard."""
+        return self.score(member) is not None
+
+    def range_by_score(self, min_score: int, max_score: int,
+                       limit: Optional[int] = None) -> List[Tuple[str, int]]:
+        """Return (member, score) pairs with score in [min_score, max_score].
+
+        Results are in descending score order (highest first).
+        limit= caps the number of results returned.
+
+        Uses a ranged scan on the rank-key prefix — O(matching) time and O(1)
+        memory per entry (streaming).
+
+        Example — players between Bronze and Silver tier:
+            bronze_silver = lb.range_by_score(1000, 4999)
+        """
+        prefix    = self._rank_prefix()
+        plen      = len(prefix)
+        inv_start = _MAX_SCORE - max_score
+        inv_end   = _MAX_SCORE - min_score + 1
+        start_key = f'{prefix}{inv_start:019d}'
+        end_key   = f'{prefix}{inv_end:019d}'
+        result    = []
+        count     = 0
+        for full_key, _ in self._db.scan(start_key, end_key):
+            if not full_key.startswith(prefix):
+                break
+            local     = full_key[plen:]
+            sep       = local.index(':')
+            inv_score = int(local[:sep])
+            member    = local[sep + 1:]
+            result.append((member, _MAX_SCORE - inv_score))
+            count += 1
+            if limit is not None and count >= limit:
+                break
+        return result
+
     def count(self) -> int:
         """Total number of members."""
         return sum(1 for _ in self._db.prefix_scan(self._rank_prefix()))

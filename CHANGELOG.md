@@ -5,6 +5,18 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 98 — Leaderboard.range_by_score / increment_score / has
+**Added:**
+- `Leaderboard.range_by_score(min_score, max_score, limit=None)` — return
+  (member, score) pairs with score in [min_score, max_score] in descending
+  order.  Uses a ranged rank-key scan — O(matching) time, O(1) memory per entry.
+  Key use case: finding all members in a tier (bronze/silver/gold).
+- `Leaderboard.increment_score(member, delta)` — add delta to score, alias for
+  update() with a more explicit name.
+- `Leaderboard.has(member)` — check membership, alias for score()!=None.
+
+---
+
 ## Iteration 97 — Queue.push_many() batch push optimization
 **Scaling fix:**
 - `Queue.push_many(items)` previously called `push()` N times — 2N WAL records
