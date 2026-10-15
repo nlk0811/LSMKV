@@ -5,6 +5,18 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 91 — TimeSeries.delete_before/clear + reverse_scan(limit=)
+**Scaling fix:**
+- `TimeSeries.delete_before(ts)` — was list(scan_keys)+N deletes; now
+  `range_delete(prefix, end_key)`.
+- `TimeSeries.clear()` — was list(scan_keys)+N deletes; now `prefix_delete()`.
+- `reverse_scan(start, end, limit=N)` — when limit= is given, uses `tail(N)`
+  which is O(N) memory instead of O(total_range).  Common use case of "last N
+  records newest first" is now memory-bounded.  Unlimited reverse_scan remains
+  O(n) (documented).
+
+---
+
 ## Iteration 90 — PriorityQueue.clear + MultiMap.remove_all/clear efficiency fixes
 **Scaling fix:**
 - `PriorityQueue.clear()` — was list(scan_keys)+N deletes; now prefix_delete().

@@ -174,18 +174,11 @@ class TimeSeries:
     def delete_before(self, timestamp: float) -> int:
         """Delete all data points strictly before timestamp.  Returns count."""
         end_key = f'__ts:{self._name}:{int(timestamp * _US):020d}'
-        keys    = list(self._db.scan_keys(self._prefix(), end_key))
-        for k in keys:
-            self._db.delete(k)
-        return len(keys)
+        return self._db.range_delete(self._prefix(), end_key)
 
     def clear(self) -> int:
         """Delete all data points."""
-        keys = list(self._db.scan_keys(
-            self._prefix(), self._prefix()[:-1] + ';'))
-        for k in keys:
-            self._db.delete(k)
-        return len(keys)
+        return self._db.prefix_delete(self._prefix())
 
     # ── inspection ────────────────────────────────────────────────────────────
 

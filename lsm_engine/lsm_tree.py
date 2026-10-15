@@ -2221,18 +2221,33 @@ class LSMTree:
             if filter_fn(key, value):
                 yield key, value
 
-    def reverse_scan(self, start=None, end=None) -> Iterator[Tuple[str, str]]:
+    def reverse_scan(self, start=None, end=None,
+                     limit: Optional[int] = None) -> Iterator[Tuple[str, str]]:
         """Scan in reverse sorted order (largest key first).
 
-        Equivalent to `reversed(list(scan(start, end)))` but expressed as an
-        iterator.  O(n) memory — all matching entries are buffered before
-        any are yielded.  For very large ranges, prefer forward scan + client-
-        side reversal or use `Cursor.seek_to_last()` for single-entry lookups.
+        O(n) memory for the unlimited case — all matching entries are buffered
+        before any are yielded.
+
+        limit — when given, uses tail(limit, end=end) which is O(limit) memory.
+                Only the last `limit` entries (by key) are returned in reverse.
+                Entries with key < start are excluded after the tail is taken.
+                Use limit= to cheaply scan the most recent N records in reverse
+                without loading the entire range.
 
         Example — most recent orders first:
             for key, val in db.reverse_scan('order:', 'order;'):
                 display(key, val)
+
+            # Last 10 orders newest first — O(10) memory:
+            for key, val in db.reverse_scan('order:', 'order;', limit=10):
+                display(key, val)
         """
+        if limit is not None:
+            pairs = self.tail(limit, end=end)
+            if start is not None:
+                pairs = [(k, v) for k, v in pairs if k >= start]
+            yield from reversed(pairs)
+            return
         results = list(self.scan(start, end))
         yield from reversed(results)
 
