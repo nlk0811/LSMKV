@@ -29,7 +29,7 @@ Example
     g.remove_node('carol')     # removes all edges to/from carol
 """
 
-from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Dict, Iterator, List, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .lsm_tree import LSMTree
@@ -168,6 +168,67 @@ class Graph:
         n = self.edge_count()
         self._db.prefix_delete(f'__graph:{self._name}:')
         return n
+
+    # ── traversal ─────────────────────────────────────────────────────────────
+
+    def bfs(self, start: str,
+            max_depth: Optional[int] = None) -> 'Iterator[str]':
+        """Yield nodes reachable from start in breadth-first order.
+
+        start is yielded first.  Each node is visited at most once.
+
+        max_depth — stop after this many hops from start (None = unlimited).
+                    max_depth=1 yields start + its direct neighbors.
+
+        Memory: O(visited) — proportional to nodes reached, not total graph size.
+
+        Example — find all friends-of-friends:
+            friends = list(graph.bfs('alice', max_depth=2))
+        """
+        from collections import deque as _deque
+        visited: set = {start}
+        queue = _deque([(start, 0)])
+        while queue:
+            node, depth = queue.popleft()
+            yield node
+            if max_depth is None or depth < max_depth:
+                for neighbor in self.neighbors(node):
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        queue.append((neighbor, depth + 1))
+
+    def shortest_path(self, src: str,
+                      dst: str) -> 'Optional[List[str]]':
+        """Return the shortest directed path from src to dst as a list of nodes.
+
+        Returns None if no path exists.  Returns [src] if src == dst.
+        Uses BFS — finds the fewest-hop path.
+
+        Memory: O(visited) — proportional to nodes explored before reaching dst.
+
+        Example:
+            path = graph.shortest_path('alice', 'carol')
+            # ['alice', 'bob', 'carol'] — alice → bob → carol
+        """
+        from collections import deque as _deque
+        if src == dst:
+            return [src]
+        prev: dict = {src: None}
+        queue = _deque([src])
+        while queue:
+            node = queue.popleft()
+            for neighbor in self.neighbors(node):
+                if neighbor not in prev:
+                    prev[neighbor] = node
+                    if neighbor == dst:
+                        path = []
+                        cur: Optional[str] = dst
+                        while cur is not None:
+                            path.append(cur)
+                            cur = prev[cur]
+                        return list(reversed(path))
+                    queue.append(neighbor)
+        return None
 
     # ── inspection ────────────────────────────────────────────────────────────
 

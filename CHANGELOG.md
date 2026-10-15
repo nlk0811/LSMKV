@@ -5,6 +5,17 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 96 — Graph.bfs() + Graph.shortest_path() traversal algorithms
+**Added:**
+- `Graph.bfs(start, max_depth=None)` — breadth-first traversal yielding nodes
+  in BFS order.  Memory O(visited).  max_depth= limits the hop count.
+- `Graph.shortest_path(src, dst)` — BFS shortest (fewest-hop) directed path.
+  Returns list of node names or None if unreachable.  Memory O(visited).
+- These turn LSMKV's Graph into a real persistent graph database supporting
+  traversal and path-finding, not just edge storage.
+
+---
+
 ## Iteration 95 — Queue.clear + Bitmap.clear_all efficiency fixes
 **Scaling fix:**
 - `Queue.clear()` — was building a pipeline with N individual delete ops (N
