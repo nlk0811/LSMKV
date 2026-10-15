@@ -5,6 +5,20 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 87 — TimeSeries.first/latest OOM fixes + range(limit=)
+**Scaling fix:**
+- `TimeSeries.first()` previously called `list(db.scan(...))` to get the
+  oldest point — loading ALL points into memory.  Fixed to use `scan(limit=1)`.
+  Now O(log n) instead of O(n) memory.
+- `TimeSeries.latest(n)` loaded ALL points then took `[-n:]` — O(total_points)
+  memory.  Fixed to use `db.tail(n)` which is O(n) memory via deque(maxlen=n).
+- Added `limit=` parameter to `TimeSeries.range()` so callers can bound memory
+  usage on large time windows.
+- For a series with 10M points, `latest(10)` now uses ~10 tuples of memory
+  instead of 10M.
+
+---
+
 ## Iteration 86 — Snapshot.count_prefix/is_empty/first/last
 **Added:**
 - `Snapshot.count_prefix(prefix)`, `is_empty(start, end)`, `first(start, end)`,
