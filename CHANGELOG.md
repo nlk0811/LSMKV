@@ -5,6 +5,17 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 99 — TimeSeries.downsample() time-bucket aggregation
+**Added:**
+- `TimeSeries.downsample(bucket_seconds, start, end, fn='average')` — aggregate
+  data points into fixed-size time buckets.  Returns [(bucket_ts, aggregate)].
+  fn: 'average' (default), 'sum', 'min', 'max', 'count'.
+  O(1) memory per bucket — streams via _scan_range() without materialising.
+  Empty buckets are omitted.
+  Common use: 1-minute averages from per-second raw data for dashboards.
+
+---
+
 ## Iteration 98 — Leaderboard.range_by_score / increment_score / has
 **Added:**
 - `Leaderboard.range_by_score(min_score, max_score, limit=None)` — return

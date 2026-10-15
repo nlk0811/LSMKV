@@ -187,6 +187,49 @@ class TimeSeries:
                 result = v
         return result
 
+    def downsample(self, bucket_seconds: float, start: float, end: float,
+                   fn: str = 'average') -> List[Tuple[float, float]]:
+        """Aggregate data into fixed-size time buckets.  Returns [(ts, value)].
+
+        Each bucket spans [bucket_start, bucket_start + bucket_seconds).
+        The timestamp in each result tuple is the bucket's start time.
+        Empty buckets are omitted.
+
+        fn — aggregation function: 'average' (default), 'sum', 'min', 'max',
+             or 'count'.
+
+        O(1) memory per bucket — streams the range without materialising.
+
+        Example — 1-minute CPU average over the last hour:
+            now = time.time()
+            buckets = cpu.downsample(60, now - 3600, now, fn='average')
+            # [(ts1, avg1), (ts2, avg2), ...]
+        """
+        import math as _math
+        _agg_fns = {
+            'average': lambda vals: sum(vals) / len(vals),
+            'sum':     sum,
+            'min':     min,
+            'max':     max,
+            'count':   len,
+        }
+        if fn not in _agg_fns:
+            raise ValueError(f'fn must be one of {list(_agg_fns)}')
+        agg_fn = _agg_fns[fn]
+
+        buckets: 'dict' = {}
+        for ts, v in self._scan_range(start, end):
+            bucket_idx = int((ts - start) / bucket_seconds)
+            if bucket_idx not in buckets:
+                buckets[bucket_idx] = []
+            buckets[bucket_idx].append(v)
+
+        result = []
+        for idx in sorted(buckets):
+            bucket_ts = start + idx * bucket_seconds
+            result.append((bucket_ts, agg_fn(buckets[idx])))
+        return result
+
     # ── maintenance ───────────────────────────────────────────────────────────
 
     def delete_before(self, timestamp: float) -> int:
