@@ -171,6 +171,31 @@ class Graph:
 
     # ── traversal ─────────────────────────────────────────────────────────────
 
+    def dfs(self, start: str,
+            max_depth: Optional[int] = None) -> 'Iterator[str]':
+        """Yield nodes reachable from start in depth-first order.
+
+        start is yielded first.  Each node is visited at most once.
+        Uses iterative DFS (explicit stack) to avoid Python recursion limits.
+
+        max_depth — maximum hops from start (None = unlimited).
+
+        Memory: O(visited) — proportional to nodes reached, not total graph.
+
+        Example — find all transitive dependencies:
+            deps = list(graph.dfs('package_a'))
+        """
+        visited: set = {start}
+        stack = [(start, 0)]
+        while stack:
+            node, depth = stack.pop()
+            yield node
+            if max_depth is None or depth < max_depth:
+                for neighbor in reversed(list(self.neighbors(node))):
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        stack.append((neighbor, depth + 1))
+
     def bfs(self, start: str,
             max_depth: Optional[int] = None) -> 'Iterator[str]':
         """Yield nodes reachable from start in breadth-first order.

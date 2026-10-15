@@ -5,6 +5,16 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 100 — Graph.dfs() depth-first traversal
+**Added:**
+- `Graph.dfs(start, max_depth=None)` — iterative depth-first traversal
+  (explicit stack to avoid Python recursion limits).  Memory O(visited).
+  Complements bfs() added in iter-96 for different traversal patterns.
+  Use cases: dependency ordering, transitive closure, cycle-detection prep.
+- README test count updated: 1055 → 1112, test file count 70+ → 80+.
+
+---
+
 ## Iteration 99 — TimeSeries.downsample() time-bucket aggregation
 **Added:**
 - `TimeSeries.downsample(bucket_seconds, start, end, fn='average')` — aggregate

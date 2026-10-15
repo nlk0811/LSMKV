@@ -447,7 +447,7 @@ Full diagnosis in [SCALING_ISSUES.md](Project/SCALING_ISSUES.md).
 cd Project
 pip install pytest
 pytest tests/ -v
-# 1055 tests across 70+ test files
+# 1112 tests across 80+ test files
 ```
 
 | Test file | What it covers |
