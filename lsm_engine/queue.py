@@ -67,9 +67,26 @@ class Queue:
         return len(self)
 
     def push_many(self, items) -> int:
-        """Push multiple items.  Returns the new queue length."""
-        for item in items:
-            self.push(item)
+        """Push multiple items atomically.  Returns the new queue length.
+
+        N individual push() calls = 2N WAL records (one tail-increment + one
+        item-put per push).  push_many(N) = 2 WAL records regardless of N:
+        one atomic increment by N for the tail, one WriteBatch for all items.
+
+        Example:
+            q.push_many(['job:1', 'job:2', 'job:3'])
+        """
+        from .write_batch import WriteBatch as _WB
+        items = list(items)
+        n = len(items)
+        if not n:
+            return len(self)
+        new_tail  = self._db.increment(self._tail_key, amount=n)
+        first_seq = new_tail - n + 1
+        batch = _WB()
+        for i, item in enumerate(items):
+            batch.put(self._item_key(first_seq + i), item)
+        self._db.write(batch)
         return len(self)
 
     # ── pop / peek ────────────────────────────────────────────────────────────

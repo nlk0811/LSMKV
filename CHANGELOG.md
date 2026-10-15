@@ -5,6 +5,16 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 97 — Queue.push_many() batch push optimization
+**Scaling fix:**
+- `Queue.push_many(items)` previously called `push()` N times — 2N WAL records
+  (one tail-increment + one item-put per push).
+- Fixed to use one atomic `increment(tail, amount=N)` + one `WriteBatch` for all
+  items = 2 WAL records regardless of N.
+- For N=1000 items: 2000 WAL records → 2 WAL records.
+
+---
+
 ## Iteration 96 — Graph.bfs() + Graph.shortest_path() traversal algorithms
 **Added:**
 - `Graph.bfs(start, max_depth=None)` — breadth-first traversal yielding nodes
