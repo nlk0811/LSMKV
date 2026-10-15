@@ -5,6 +5,19 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 89 — Collection.clear + Graph.degree/in_degree efficiency fixes
+**Scaling fix:**
+- `Collection.clear()` previously called `list(scan_keys(...))` to collect all
+  member keys, then deleted them one-by-one (N individual WAL records, O(n)
+  memory).  Fixed to delegate to `prefix_delete()` — O(batch_size) memory and
+  ceil(N/500) WAL fsyncs instead of N.
+- `Graph.degree(node)` previously called `len(neighbors(node))` which loads the
+  entire neighbor list just to count.  Fixed to use `count_prefix(edge_prefix)`.
+- `Graph.in_degree(node)` same fix with `count_prefix(pred_prefix)`.
+- All 50 collection + graph tests still pass.
+
+---
+
 ## Iteration 88 — Leaderboard.bottom/members OOM fixes
 **Scaling fix:**
 - `Leaderboard.bottom(n)` previously called `self.top(self.count())` which
