@@ -58,30 +58,54 @@ class Collection:
     # ── write ─────────────────────────────────────────────────────────────────
 
     def add(self, *members: str) -> int:
-        """Add one or more members.  Returns count actually added (new ones)."""
-        added = 0
-        for m in members:
-            if not self._db.has(self._key(m)):
-                self._db.put(self._key(m), '')
-                added += 1
-        return added
+        """Add one or more members.  Returns count actually added (new ones).
+
+        Uses a single WriteBatch for all new members — one WAL fsync instead of
+        N when adding multiple members at once.
+        """
+        new = [m for m in members if not self._db.has(self._key(m))]
+        if not new:
+            return 0
+        from .write_batch import WriteBatch as _WB
+        batch = _WB()
+        for m in new:
+            batch.put(self._key(m), '')
+        self._db.write(batch)
+        return len(new)
 
     def add_from(self, iterable: Iterable[str]) -> int:
         """Add all members from an iterable.  Returns count added."""
         return self.add(*iterable)
 
     def remove(self, *members: str) -> int:
-        """Remove one or more members.  Returns count actually removed."""
-        removed = 0
-        for m in members:
-            if self._db.has(self._key(m)):
-                self._db.delete(self._key(m))
-                removed += 1
-        return removed
+        """Remove one or more members.  Returns count actually removed.
+
+        Uses a single WriteBatch for all present members — one WAL fsync instead
+        of N when removing multiple members at once.
+        """
+        present = [m for m in members if self._db.has(self._key(m))]
+        if not present:
+            return 0
+        from .write_batch import WriteBatch as _WB
+        batch = _WB()
+        for m in present:
+            batch.delete(self._key(m))
+        self._db.write(batch)
+        return len(present)
 
     def discard(self, member: str) -> None:
         """Remove member if present; no-op if absent."""
         self._db.delete(self._key(member))
+
+    def discard_many(self, *members: str) -> None:
+        """Remove members without checking existence (idempotent, one WAL fsync).
+
+        Faster than remove() when you don't need the count and don't care
+        whether members were present.
+        """
+        if not members:
+            return
+        self._db.delete_many([self._key(m) for m in members])
 
     def pop(self) -> Optional[str]:
         """Remove and return an arbitrary member, or None if empty."""

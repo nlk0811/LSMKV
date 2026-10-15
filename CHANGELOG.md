@@ -5,6 +5,17 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 102 — Collection.add/remove batch writes + discard_many
+**Scaling fix:**
+- `Collection.add(*members)` — was N individual puts (N WAL records).  Now
+  collects new members with has() checks, then writes one WriteBatch = 1 fsync.
+- `Collection.remove(*members)` — same: N individual deletes → 1 WriteBatch.
+- Added `Collection.discard_many(*members)` — idempotent batch discard with no
+  existence checks; delegates to `delete_many()`.  Faster when count is not needed.
+- For adding 1000 members: 1000 WAL records → 1 WAL fsync.
+
+---
+
 ## Iteration 101 — Collection set operations streaming optimisation
 **Scaling fix:**
 - `intersection(other)` — was `members() & members()` (loads both full sets).
