@@ -68,20 +68,24 @@ class Index:
     def add(self, doc_id: str, text: str, **extra_fields) -> None:
         """Index a document.  Extra keyword fields are also tokenized.
 
+        All writes (doc text + N token entries) are batched in one WriteBatch
+        — one WAL fsync regardless of token count.
+
         Example:
             idx.add('post:42', 'How to use Python', title='Python Tutorial')
         """
-        # Combine all text sources
+        from .write_batch import WriteBatch as _WB
         full_text = text + ' ' + ' '.join(str(v) for v in extra_fields.values())
         # Remove old index entries if the document was previously indexed
         if self._db.has(self._doc_key(doc_id)):
             self.remove(doc_id)
-        # Store raw text
-        self._db.put(self._doc_key(doc_id), full_text)
-        # Write inverted index entries
+        # Write doc text + all token entries in one atomic batch
+        batch  = _WB()
         tokens = set(_tokenize(full_text))
+        batch.put(self._doc_key(doc_id), full_text)
         for token in tokens:
-            self._db.put(self._token_key(token, doc_id), '')
+            batch.put(self._token_key(token, doc_id), '')
+        self._db.write(batch)
 
     def remove(self, doc_id: str) -> bool:
         """Remove a document and its index entries.  Returns True if existed."""

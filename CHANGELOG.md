@@ -5,6 +5,15 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 103 — Index.add() batch write optimisation
+**Scaling fix:**
+- `Index.add(doc_id, text)` — was writing doc text + N token entries as N+1
+  individual puts (N+1 WAL records per document).  Now batches everything in
+  one WriteBatch = 1 WAL fsync per document.
+- For a 100-token document: 101 WAL records → 1 WAL fsync.
+
+---
+
 ## Iteration 102 — Collection.add/remove batch writes + discard_many
 **Scaling fix:**
 - `Collection.add(*members)` — was N individual puts (N WAL records).  Now
