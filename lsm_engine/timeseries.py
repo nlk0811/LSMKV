@@ -144,30 +144,48 @@ class TimeSeries:
 
     # ── aggregation ───────────────────────────────────────────────────────────
 
+    def _scan_range(self, start: float, end: float):
+        """Stream (timestamp, value) pairs in [start, end] without materialising."""
+        start_key = f'__ts:{self._name}:{int(start * _US):020d}'
+        end_key   = f'__ts:{self._name}:{int(end * _US) + 1:020d}'
+        plen      = len(self._prefix())
+        for k, v in self._db.scan(start_key, end_key):
+            yield int(k[plen:]) / _US, float(v)
+
     def count(self, start: float = None, end: float = None) -> int:
         """Count data points in [start, end].  Unbounded if None."""
-        if start is None and end is None:
-            return sum(1 for _ in self._db.scan_keys(
-                self._prefix(), self._prefix()[:-1] + ';'))
-        return len(self.range(start, end)) if start and end else sum(
-            1 for _ in self._db.scan_keys(self._prefix(), self._prefix()[:-1] + ';'))
+        if start is not None and end is not None:
+            return sum(1 for _ in self._scan_range(start, end))
+        return sum(1 for _ in self._db.scan_keys(
+            self._prefix(), self._prefix()[:-1] + ';'))
 
     def average(self, start: float, end: float) -> Optional[float]:
-        """Average value in [start, end].  None if range is empty."""
-        pts = self.range(start, end)
-        return sum(v for _, v in pts) / len(pts) if pts else None
+        """Average value in [start, end].  None if range is empty.  O(1) memory."""
+        total = cnt = 0.0
+        for _, v in self._scan_range(start, end):
+            total += v
+            cnt   += 1
+        return total / cnt if cnt else None
 
     def sum(self, start: float, end: float) -> float:
-        """Sum of values in [start, end]."""
-        return sum(v for _, v in self.range(start, end))
+        """Sum of values in [start, end].  O(1) memory."""
+        return sum(v for _, v in self._scan_range(start, end))
 
     def minimum(self, start: float, end: float) -> Optional[float]:
-        pts = self.range(start, end)
-        return min(v for _, v in pts) if pts else None
+        """Minimum value in [start, end].  O(1) memory."""
+        result = None
+        for _, v in self._scan_range(start, end):
+            if result is None or v < result:
+                result = v
+        return result
 
     def maximum(self, start: float, end: float) -> Optional[float]:
-        pts = self.range(start, end)
-        return max(v for _, v in pts) if pts else None
+        """Maximum value in [start, end].  O(1) memory."""
+        result = None
+        for _, v in self._scan_range(start, end):
+            if result is None or v > result:
+                result = v
+        return result
 
     # ── maintenance ───────────────────────────────────────────────────────────
 

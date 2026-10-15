@@ -5,6 +5,18 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 94 — TimeSeries aggregation methods O(1) memory fix
+**Scaling fix:**
+- `TimeSeries.average/sum/minimum/maximum/count(start, end)` all called
+  `self.range(start, end)` which returns a list — loading all points in the
+  time window into memory before computing the aggregate.
+  For a 1M-point window, each aggregation allocated 1M (timestamp, value) tuples.
+- Added `_scan_range(start, end)` — a private generator that streams entries
+  directly from `db.scan()` without materialising.  All five aggregation methods
+  now use it: O(1) memory regardless of window size.
+
+---
+
 ## Iteration 93 — Graph.clear + Graph.remove_node efficiency fixes
 **Scaling fix:**
 - `Graph.clear()` — was list+N deletes; now `edge_count()` then `prefix_delete()`.
