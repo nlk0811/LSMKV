@@ -5,6 +5,15 @@ Each entry is a discrete improvement: a bottleneck found, diagnosed, fixed, and 
 
 ---
 
+## Iteration 106 — PriorityQueue.push_many batch write optimisation
+**Scaling fix:**
+- `PriorityQueue.push_many(items_with_priorities)` — was calling push() N times
+  (2N WAL records each: one increment + one put).  Fixed to use one atomic
+  increment(seq, amount=N) + one WriteBatch = 2 WAL records for N items.
+- Preserves strict FIFO ordering within same priority (sequential seq numbers).
+
+---
+
 ## Iteration 105 — TimeSeries.add_many + MultiMap.add_many batch writes
 **Scaling fix:**
 - `TimeSeries.add_many(points)` — was calling add() N times (N WAL records).

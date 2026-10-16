@@ -76,8 +76,29 @@ class PriorityQueue:
         return seq
 
     def push_many(self, items_with_priorities) -> List[int]:
-        """Push multiple (item, priority) tuples.  Returns list of seq numbers."""
-        return [self.push(item, pri) for item, pri in items_with_priorities]
+        """Push multiple (item, priority) tuples atomically.  Returns seq numbers.
+
+        N individual push() calls = 2N WAL records (increment + put each).
+        push_many(N) = 2 WAL records: one atomic increment by N, one WriteBatch.
+
+        Example:
+            seqs = pq.push_many([('task_a', 5), ('task_b', 10), ('task_c', 1)])
+        """
+        from .write_batch import WriteBatch as _WB
+        pairs = list(items_with_priorities)
+        n = len(pairs)
+        if not n:
+            return []
+        new_tail = self._db.increment(self._seq_key, amount=n)
+        first_seq = new_tail - n + 1
+        batch = _WB()
+        seqs  = []
+        for i, (item, priority) in enumerate(pairs):
+            seq = first_seq + i
+            batch.put(self._item_key(priority, seq), item)
+            seqs.append(seq)
+        self._db.write(batch)
+        return seqs
 
     # ── pop / peek ────────────────────────────────────────────────────────────
 
